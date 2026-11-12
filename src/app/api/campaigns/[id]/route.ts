@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, parseBody, ApiError, audit } from '@/lib/api';
 import { all, get, nowIso, run, tx } from '@/lib/db';
 import { campaignPatchSchema } from '@/lib/validation';
@@ -9,6 +10,7 @@ export const dynamic = 'force-dynamic';
 export const GET = handler(async (_req, ctx, auth) => {
   const { id } = await ctx.params;
   const campaign = get<Record<string, unknown>>('SELECT * FROM campaigns WHERE id = ? AND user_id = ?', id, auth.user.id);
+  if (!campaign || !inWorkspace('campaigns', id, auth)) throw new ApiError(404, 'Campaign not found', 'not_found');
   if (!campaign) throw new ApiError(404, 'Campaign not found', 'not_found');
 
   const media = all(
@@ -51,6 +53,7 @@ export const PATCH = handler(async (req, ctx, auth) => {
   const { id } = await ctx.params;
   const body = await parseBody(req, campaignPatchSchema);
   const existing = get<{ id: string }>('SELECT id FROM campaigns WHERE id = ? AND user_id = ?', id, auth.user.id);
+  if (!existing || !inWorkspace('campaigns', id, auth)) throw new ApiError(404, 'Campaign not found', 'not_found');
   if (!existing) throw new ApiError(404, 'Campaign not found', 'not_found');
 
   const map: Record<string, string> = {

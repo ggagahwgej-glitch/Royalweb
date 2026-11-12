@@ -3,6 +3,7 @@ import { all, get, newId, nowIso, run } from '@/lib/db';
 import { ADAPTERS, getAdapter } from '@/lib/platforms';
 import { encryptJson } from '@/lib/crypto';
 import { KNOWN_SECRET_KEYS, envVarFor, setSecret } from '@/lib/secrets';
+import { activeWorkspace } from '@/lib/workspace';
 
 /**
  * .env.local pre-seeding.
@@ -298,11 +299,48 @@ export function runEnvSeed(userId: string, trigger: 'first_run' | 'manual' = 'ma
       report.skipped.push({ platformId: account.platformId, reason: 'unknown platform' });
       continue;
     }
-    const existing = get<{ id: string; status: string }>(
-      'SELECT id, status FROM connected_accounts WHERE platform_id = ? AND account_name = ?',
+    // The very first boot seeds accounts before anyone opens the dashboard, so
+    // users.active_workspace_id may still be NULL. activeWorkspace() creates the
+    // default workspace on demand — otherwise the account would be stored in the
+    // NULL workspace, visible to every client.
+    const workspaceId = activeWorkspace(userId).id;
+    let seededName = account.accountName;
+    const ownRow = get<{ id: string; status: string }>(
+      'SELECT id, status FROM connected_accounts WHERE platform_id = ? AND account_name = ? AND workspace_id IS ?',
       account.platformId,
-      account.accountName
+      seededName,
+      workspaceId
     );
+    if (!ownRow) {
+      // The global UNIQUE(platform_id, account_name) means another workspace may
+      // already hold this name. Seeding must add our own row, not overwrite theirs.
+      const taken = get<{ id: string }>(
+        'SELECT id FROM connected_accounts WHERE platform_id = ? AND account_name = ?',
+        account.platformId,
+        seededName
+      );
+      if (taken) {
+        const label =
+          get<{ name: string }>('SELECT name FROM workspaces WHERE id = ?', workspaceId ?? '')?.name?.trim() ||
+          'workspace';
+        let candidate = `${seededName} · ${label}`;
+        let n = 2;
+        while (
+          get<{ id: string }>('SELECT id FROM connected_accounts WHERE platform_id = ? AND account_name = ?', account.platformId, candidate)
+        ) {
+          candidate = `${seededName} · ${label} ${n}`;
+          n += 1;
+        }
+        seededName = candidate;
+      }
+    }
+    const existing =
+      ownRow ??
+      get<{ id: string; status: string }>(
+        'SELECT id, status FROM connected_accounts WHERE platform_id = ? AND account_name = ?',
+        account.platformId,
+        seededName
+      );
     if (existing && existing.status === 'connected') {
       report.skipped.push({ platformId: account.platformId, reason: `already connected as ${account.accountName}` });
       continue;
@@ -310,9 +348,6 @@ export function runEnvSeed(userId: string, trigger: 'first_run' | 'manual' = 'ma
     const id = existing?.id ?? newId();
     // Credentials seeded for a user land in that user's active workspace, never
     // in the shared NULL workspace, so other clients cannot see them.
-    const workspaceId =
-      get<{ active_workspace_id: string | null }>('SELECT active_workspace_id FROM users WHERE id = ?', userId)
-        ?.active_workspace_id ?? null;
     run(
       `INSERT INTO connected_accounts (id, platform_id, user_id, workspace_id, account_name, external_id, credentials_cipher,
          scopes, token_expires_at, status, last_verified_at, last_error, meta_json, created_at, updated_at)
@@ -330,7 +365,7 @@ export function runEnvSeed(userId: string, trigger: 'first_run' | 'manual' = 'ma
       account.platformId,
       userId,
       workspaceId,
-      account.accountName,
+      seededName,
       encryptJson(account.credentials),
       adapter.oauth?.scopes.join(' ') ?? '',
       account.tokenExpiresAt,

@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, audit } from '@/lib/api';
 import { get, nowIso, run } from '@/lib/db';
 import { getAdapter } from '@/lib/platforms';
@@ -18,7 +19,7 @@ export const POST = handler(async (_req, ctx, auth) => {
     id,
     auth.user.id
   );
-  if (!account) throw new ApiError(404, 'Account not found', 'not_found');
+  if (!account || !inWorkspace('connected_accounts', id, auth)) throw new ApiError(404, 'Account not found', 'not_found');
   const adapter = getAdapter(account.platform_id);
   if (!adapter) throw new ApiError(400, 'Unknown platform', 'unknown_platform');
 

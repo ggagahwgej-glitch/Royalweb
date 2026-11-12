@@ -85,3 +85,22 @@ and due. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 - Automate browsers, bypass logins/CAPTCHAs, rotate proxies, or spoof identity.
 - Scrape platforms or use unofficial private endpoints.
 - Publish to accounts you have not explicitly connected and approved content for.
+
+## Workspace isolation (agency mode)
+
+A single operator account can own several client workspaces, so `user_id` alone is **not** an ownership
+check. Every single-resource route (`campaigns/:id`, `media/:id`, `contents/:id`, `jobs/:id`, `manual/:id`,
+`accounts/:id`, and their `/verify`, `/file`, `/generate`, `/schedule`, `/status`, `/recycle` siblings) loads
+the row and then calls `inWorkspace()` (`src/lib/scope.ts`) before doing anything. A resource from another
+workspace answers `404`, not `403` — the existence of another client's campaign is itself information.
+
+Additional rules enforced in code:
+
+- Publishing resolves settings, the sender identity and the platform account from the **campaign's**
+  workspace, never from whichever workspace happens to be active in the browser.
+- `UNIQUE (platform_id, account_name)` is installation-wide, so connecting an account whose name already
+  exists in another workspace stores it under a disambiguated name instead of overwriting the other
+  client's credentials.
+- Rows with a `NULL` workspace (legacy data or an import path that forgot to set it) are healed to the
+  operator's original workspace the first time it is resolved, so they can never appear in a different one.
+- Snapshots (whole-database copies) are listed and downloaded by `admin` accounts only.

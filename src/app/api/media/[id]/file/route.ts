@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getSession } from '@/lib/auth';
+import { inWorkspace } from '@/lib/scope';
 import { get } from '@/lib/db';
 import { readDerivative } from '@/lib/media/storage';
 import { absoluteMediaPath } from '@/lib/media/storage';
@@ -15,6 +16,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const { id } = await ctx.params;
   const variant = new URL(req.url).searchParams.get('variant') || 'original';
 
+  if (!inWorkspace('media_assets', id, { user: session.user, workspaceId: session.workspaceId ?? null })) {
+    return new Response('Not found', { status: 404 });
+  }
   const row = get<{ filename: string; mime: string; kind: string }>(
     'SELECT filename, mime, kind FROM media_assets WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
     id,

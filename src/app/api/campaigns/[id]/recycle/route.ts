@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, parseBody, audit, ApiError } from '@/lib/api';
 import { enforceRateLimit } from '@/lib/rate-limit';
 import { dueForRecycling, recycleCampaign, setRecycleWindow } from '@/lib/evergreen';
@@ -19,7 +20,7 @@ export const GET = handler(async (_req, ctx, auth) => {
     id,
     auth.user.id
   );
-  if (!campaign) throw new ApiError(404, 'Campaign not found', 'not_found');
+  if (!campaign || !inWorkspace('campaigns', id, auth)) throw new ApiError(404, 'Campaign not found', 'not_found');
   return jsonOk({
     windowDays: Number(campaign.recycle_after_days ?? 0),
     status: campaign.status,

@@ -4,6 +4,7 @@ import { getAdapter } from '@/lib/platforms';
 import { decryptJson, encryptJson } from '@/lib/crypto';
 import { accountOut } from '@/lib/serialize';
 import { z } from 'zod';
+import { inWorkspace } from '@/lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,7 @@ const patchSchema = z.object({
   accountName: z.string().trim().min(1).max(160).optional(),
 });
 
-function owned(id: string, userId: string) {
+function owned(id: string, auth: { user: { id: string }; workspaceId: string | null }) {
   return get<{
     id: string;
     platform_id: string;
@@ -23,13 +24,14 @@ function owned(id: string, userId: string) {
     `SELECT a.id, a.platform_id, a.credentials_cipher, a.meta_json, a.account_name FROM connected_accounts a
       WHERE a.id = ? AND a.user_id = ? AND a.status != 'revoked'`,
     id,
-    userId
+    auth.user.id
   );
 }
 
 export const GET = handler(async (_req, ctx, auth) => {
   const { id } = await ctx.params;
-  if (!owned(id, auth.user.id)) throw new ApiError(404, 'Account not found', 'not_found');
+  if (!owned(id, auth) || !inWorkspace('connected_accounts', id, auth))
+    throw new ApiError(404, 'Account not found', 'not_found');
   const row = get<Record<string, unknown>>(
     `SELECT a.*, p.name AS platform_name, p.automation FROM connected_accounts a
        JOIN platforms p ON p.id = a.platform_id WHERE a.id = ?`,
@@ -41,8 +43,8 @@ export const GET = handler(async (_req, ctx, auth) => {
 /** Update destination details (board, channel, blog, location…) without re-entering the token. */
 export const PATCH = handler(async (req, ctx, auth) => {
   const { id } = await ctx.params;
-  const account = owned(id, auth.user.id);
-  if (!account) throw new ApiError(404, 'Account not found', 'not_found');
+  const account = owned(id, auth);
+  if (!account || !inWorkspace('connected_accounts', id, auth)) throw new ApiError(404, 'Account not found', 'not_found');
   const adapter = getAdapter(account.platform_id);
   if (!adapter) throw new ApiError(400, 'Unknown platform', 'unknown_platform');
   const body = await parseBody(req, patchSchema);
@@ -83,8 +85,8 @@ export const PATCH = handler(async (req, ctx, auth) => {
  */
 export const DELETE = handler(async (req, ctx, auth) => {
   const { id } = await ctx.params;
-  const account = owned(id, auth.user.id);
-  if (!account) throw new ApiError(404, 'Account not found', 'not_found');
+  const account = owned(id, auth);
+  if (!account || !inWorkspace('connected_accounts', id, auth)) throw new ApiError(404, 'Account not found', 'not_found');
   const purge = new URL(req.url).searchParams.get('purge') === '1';
 
   run(

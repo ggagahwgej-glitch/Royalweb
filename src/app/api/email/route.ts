@@ -13,7 +13,11 @@ export const GET = handler(async (_req, _ctx, auth) => {
   );
   const sent = Number(
     get<{ c: number }>(
-      "SELECT COUNT(*) AS c FROM email_messages WHERE user_id = ? AND status = 'sent'",
+      `SELECT COUNT(*) AS c FROM email_messages WHERE user_id = ? AND status = 'sent'
+         AND (workspace_id = ? OR (workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))`,
+      auth.user.id,
+      auth.workspaceId,
+      auth.workspaceId,
       auth.user.id
     )?.c ?? 0
   );
@@ -34,7 +38,7 @@ export const GET = handler(async (_req, _ctx, auth) => {
     },
     secrets: emailSecretStatus(),
     advice: deliverabilityAdvice(config),
-    messages: listEmailMessages(auth.user.id),
+    messages: listEmailMessages(auth.user.id, auth.workspaceId),
     suppressions,
     sentCount: sent,
     templates: TEMPLATE_META,

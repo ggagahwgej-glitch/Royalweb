@@ -1301,6 +1301,114 @@ async function main() {
       `connected=${bulk.summary.connected} failed=${bulk.summary.failed} skipped=${bulk.summary.skipped} · encrypted=${encrypted} · unscoped rows=${unscopedRows?.c}`
     );
 
+    // TEST 47–48 — workspace isolation on single resources, and pause semantics
+    const isoMedia = await uploadPoster(await makePoster('Isolation Poster'), 'isolation.jpg');
+    const isoMediaId = isoMedia.uploaded[0].id;
+    const isoCampaign = await createCampaign(`Acceptance isolation ${Date.now()}`, [isoMediaId]);
+    await generate(isoCampaign.campaign.id, ['wordpress']);
+    const isoJobsBefore = unwrap(await req('/api/jobs?status=all')).jobs.filter(
+      (j) => j.campaignId === isoCampaign.campaign.id
+    );
+    const isoContentId = unwrap(await req(`/api/campaigns/${isoCampaign.campaign.id}`)).contents[0]?.id;
+    const isoAccountId = unwrap(await req('/api/accounts')).accounts[0]?.id;
+    const isoCipherBefore = new DatabaseSync(DB_PATH)
+      .prepare('SELECT credentials_cipher FROM connected_accounts WHERE id = ?')
+      .get(isoAccountId)?.credentials_cipher;
+
+    const homeSpace = unwrap(await req('/api/workspaces')).activeId;
+    const otherSpace = unwrap(await req('/api/workspaces', { method: 'POST', body: { name: 'Isolation Client' } })).workspace;
+    await req('/api/workspaces', { method: 'PATCH', body: { activeId: otherSpace.id } });
+
+    const crossCampaign = await req(`/api/campaigns/${isoCampaign.campaign.id}`);
+    const crossMediaPatch = await req(`/api/media/${isoMediaId}`, { method: 'PATCH', body: { altText: 'stolen' } });
+    const crossMediaFile = await req(`/api/media/${isoMediaId}/file`, { raw: true });
+    const crossGenerate = await req(`/api/campaigns/${isoCampaign.campaign.id}/generate`, { method: 'POST', body: { platforms: ['wordpress'] } });
+    const crossContent = await req(`/api/contents/${isoContentId}`, { method: 'PATCH', body: { caption: 'stolen copy' } });
+    const crossAccountDelete = await req(`/api/accounts/${isoAccountId}`, { method: 'DELETE' });
+    const crossJobs = unwrap(await req('/api/jobs?status=all')).jobs.filter((j) => j.campaignId === isoCampaign.campaign.id);
+    const crossAnalytics = unwrap(await req('/api/analytics')).totals.campaigns;
+    const crossBulk = unwrap(
+      await req('/api/accounts/bulk', {
+        method: 'POST',
+        body: {
+          entries: [
+            {
+              platformId: 'wordpress',
+              accountName: 'Shared Site Name',
+              credentials: { siteUrl: `http://127.0.0.1:${MOCK_PORT}`, username: 'acceptance', appPassword: 'app-pass' },
+            },
+          ],
+        },
+      })
+    );
+    const crossIsolated =
+      [crossCampaign.status, crossMediaPatch.status, crossMediaFile.status, crossGenerate.status, crossContent.status, crossAccountDelete.status].every(
+        (s) => s === 404
+      ) && crossJobs.length === 0 && crossAnalytics === 0;
+    await req('/api/workspaces', { method: 'PATCH', body: { activeId: homeSpace } });
+    const backCampaign = await req(`/api/campaigns/${isoCampaign.campaign.id}`);
+    const isoCipherAfter = new DatabaseSync(DB_PATH)
+      .prepare('SELECT credentials_cipher FROM connected_accounts WHERE id = ?')
+      .get(isoAccountId)?.credentials_cipher;
+    record(
+      'T47',
+      'A resource from another workspace is invisible and untouchable, and credentials are never hijacked',
+      crossIsolated && backCampaign.status === 200 && isoCipherBefore === isoCipherAfter && crossBulk.summary.connected === 1
+        ? 'pass'
+        : 'fail',
+      `404s=${[crossCampaign.status, crossMediaPatch.status, crossMediaFile.status, crossGenerate.status, crossContent.status, crossAccountDelete.status].join('/')} · jobs=${crossJobs.length} · analytics=${crossAnalytics} · own creds unchanged=${isoCipherBefore === isoCipherAfter}`
+    );
+
+    // Pausing must not move the slot or spend retry attempts.
+    await req('/api/settings', { method: 'PATCH', body: { globalPause: false } });
+    const slotCampaign = await createCampaign(`Acceptance pause ${Date.now()}`, [mediaId]);
+    await generate(slotCampaign.campaign.id, ['wordpress']);
+    await approveAll(slotCampaign.campaign.id);
+    // Schedule into the future so nothing publishes before the pause is set,
+    // then pull the slot into the past to make the job due.
+    const slotSchedule = await schedule(slotCampaign.campaign.id, {
+      platforms: ['wordpress'],
+      scheduledAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      timezone: 'Asia/Kolkata',
+      recurrence: 'none',
+      requireApproved: true,
+    });
+    const slotJobId = slotSchedule.jobs.find((j) => j.platformId === 'wordpress')?.id;
+    const slotBefore = new Date(Date.now() - 120_000).toISOString();
+    new DatabaseSync(DB_PATH)
+      .prepare('UPDATE publishing_jobs SET scheduled_at = ?, next_attempt_at = NULL, locked_at = NULL WHERE id = ?')
+      .run(slotBefore, slotJobId);
+    await req('/api/settings', { method: 'PATCH', body: { globalPause: true } });
+    for (let i = 0; i < 2; i += 1) {
+      const past = new Date(Date.now() - 60_000).toISOString();
+      new DatabaseSync(DB_PATH)
+        .prepare('UPDATE publishing_jobs SET next_attempt_at = ?, locked_at = NULL WHERE id = ?')
+        .run(past, slotJobId);
+      await req('/api/worker/tick', { method: 'POST', body: {} });
+    }
+    const pausedRow = new DatabaseSync(DB_PATH)
+      .prepare('SELECT status, attempts, scheduled_at, next_attempt_at FROM publishing_jobs WHERE id = ?')
+      .get(slotJobId);
+    await req('/api/settings', { method: 'PATCH', body: { globalPause: false } });
+    new DatabaseSync(DB_PATH)
+      .prepare('UPDATE publishing_jobs SET next_attempt_at = ?, locked_at = NULL, scheduled_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 60_000).toISOString(), new Date(Date.now() - 60_000).toISOString(), slotJobId);
+    await req('/api/worker/tick', { method: 'POST', body: {} });
+    const resumedRow = new DatabaseSync(DB_PATH)
+      .prepare('SELECT status FROM publishing_jobs WHERE id = ?')
+      .get(slotJobId);
+    record(
+      'T48',
+      'Pausing keeps the original slot, restores attempts and resumes publishing',
+      pausedRow?.status === 'scheduled' &&
+        pausedRow?.scheduled_at === slotBefore &&
+        Number(pausedRow?.attempts) === 0 &&
+        resumedRow?.status === 'published'
+        ? 'pass'
+        : 'fail',
+      `status=${pausedRow?.status} slot kept=${pausedRow?.scheduled_at === slotBefore} attempts=${pausedRow?.attempts} resumed=${resumedRow?.status}`
+    );
+
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');
     record('X1', 'Private contact details excluded from generated content', contactHidden ? 'pass' : 'fail');

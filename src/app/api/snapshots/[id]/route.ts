@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 /** Download the encrypted snapshot file itself — never a decrypted copy. */
 export const GET = handler(async (_req, ctx, auth) => {
   const { id } = await ctx.params;
+  if (auth.user.role !== 'admin') throw new ApiError(403, 'Admin only', 'admin_only');
   const file = snapshotFile(id);
   if (!file) throw new ApiError(404, 'Snapshot file not found on disk', 'not_found');
   await audit('snapshot.downloaded', 'system', id, auth.user.id);

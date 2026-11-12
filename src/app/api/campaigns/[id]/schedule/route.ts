@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, parseBody, audit } from '@/lib/api';
 import { all, get, newId, nowIso, run, tx } from '@/lib/db';
 import { getAdapter } from '@/lib/platforms';
@@ -15,7 +16,7 @@ export const POST = handler(async (req, ctx, auth) => {
   const body = await parseBody(req, scheduleSchema);
 
   const campaign = get<Record<string, unknown>>('SELECT * FROM campaigns WHERE id = ? AND user_id = ?', id, auth.user.id);
-  if (!campaign) throw new ApiError(404, 'Campaign not found', 'not_found');
+  if (!campaign || !inWorkspace('campaigns', id, auth)) throw new ApiError(404, 'Campaign not found', 'not_found');
   if (campaign.status === 'cancelled') throw new ApiError(400, 'This campaign was cancelled.', 'campaign_cancelled');
 
   const contents = all<{
@@ -85,10 +86,16 @@ export const POST = handler(async (req, ctx, auth) => {
         continue;
       }
 
+      // The account must belong to this workspace: publishing into another
+      // client's channel because the platform matched is a real-world disaster.
       const account = get<{ id: string; status: string }>(
         `SELECT id, status FROM connected_accounts WHERE platform_id = ? AND user_id = ? AND status = 'connected'
+           AND (workspace_id = ? OR (workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))
           ORDER BY created_at LIMIT 1`,
         platformId,
+        auth.user.id,
+        auth.workspaceId,
+        auth.workspaceId,
         auth.user.id
       );
 

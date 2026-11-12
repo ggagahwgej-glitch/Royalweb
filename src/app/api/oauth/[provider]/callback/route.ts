@@ -5,6 +5,7 @@ import { getAdapter } from '@/lib/platforms';
 import { encryptJson } from '@/lib/crypto';
 import { exchangeCode, oauthRedirectUri, type OAuthProviderId } from '@/lib/oauth';
 import { audit } from '@/lib/api';
+import { activeWorkspace } from '@/lib/workspace';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -71,16 +72,18 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ provider: s
     exchange.expiresIn ? new Date(Date.now() + exchange.expiresIn * 1000).toISOString() : null;
 
   run(
-    `INSERT INTO connected_accounts (id, platform_id, user_id, account_name, external_id, credentials_cipher,
+    `INSERT INTO connected_accounts (id, platform_id, user_id, workspace_id, account_name, external_id, credentials_cipher,
        scopes, token_expires_at, status, last_verified_at, last_error, meta_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(platform_id, account_name) DO UPDATE SET credentials_cipher = excluded.credentials_cipher,
+       workspace_id = excluded.workspace_id,
        external_id = excluded.external_id, scopes = excluded.scopes, status = excluded.status,
        token_expires_at = excluded.token_expires_at, last_verified_at = excluded.last_verified_at,
        last_error = excluded.last_error, meta_json = excluded.meta_json, updated_at = excluded.updated_at`,
     accountId,
     pending.platform_id,
     session.user.id,
+    session.workspaceId ?? activeWorkspace(session.user.id).id,
     accountName,
     verification.externalId ?? null,
     encryptJson(credentials),

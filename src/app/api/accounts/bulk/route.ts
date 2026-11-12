@@ -15,8 +15,6 @@ const entrySchema = z.object({
 
 const schema = z.object({
   entries: z.array(entrySchema).min(1).max(25),
-  /** Optional: mark platforms that were left empty, so the report is explicit. */
-  skipEmpty: z.boolean().default(true),
 });
 
 /**

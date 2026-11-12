@@ -149,7 +149,10 @@ export function activeWorkspace(userId: string): Workspace {
       user.active_workspace_id,
       userId
     );
-    if (row) return toWorkspace(row);
+    if (row) {
+      healUnscopedRows(userId, String(row.id));
+      return toWorkspace(row);
+    }
   }
   const existing = get<Record<string, unknown>>(
     'SELECT * FROM workspaces WHERE user_id = ? AND archived = 0 ORDER BY created_at LIMIT 1',
@@ -157,6 +160,7 @@ export function activeWorkspace(userId: string): Workspace {
   );
   if (existing) {
     run('UPDATE users SET active_workspace_id = ? WHERE id = ?', String(existing.id), userId);
+    healUnscopedRows(userId, String(existing.id));
     return toWorkspace(existing);
   }
   // First use: adopt the existing business identity, never invent a new brand.
@@ -180,6 +184,23 @@ export function activeWorkspace(userId: string): Workspace {
 
 export function activeWorkspaceId(userId: string): string {
   return activeWorkspace(userId).id;
+}
+
+/**
+ * Belt and braces for data written before workspace scoping existed (or by an
+ * import path that forgot to set it): a row with a NULL workspace would be
+ * readable from every client workspace, because the access predicate has to
+ * treat NULL as "the operator's original workspace". Assign such rows to that
+ * original workspace once, the first time it is resolved.
+ */
+export function healUnscopedRows(userId: string, workspaceId: string): void {
+  const orphan = get<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM connected_accounts WHERE user_id = ? AND workspace_id IS NULL`
+  );
+  if (!Number(orphan?.c ?? 0)) return;
+  for (const table of ['connected_accounts', 'campaigns', 'media_assets']) {
+    run(`UPDATE ${table} SET workspace_id = ? WHERE user_id = ? AND workspace_id IS NULL`, workspaceId, userId);
+  }
 }
 
 export function switchWorkspace(userId: string, workspaceId: string): Workspace {

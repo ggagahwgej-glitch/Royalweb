@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, parseBody, audit } from '@/lib/api';
 import { get, nowIso, run } from '@/lib/db';
 import { z } from 'zod';
@@ -18,7 +19,7 @@ export const PATCH = handler(async (req, ctx, auth) => {
     id,
     auth.user.id
   );
-  if (!task) throw new ApiError(404, 'Manual task not found', 'not_found');
+  if (!task || !inWorkspace('manual_tasks', id, auth)) throw new ApiError(404, 'Manual task not found', 'not_found');
   const body = await parseBody(req, schema);
 
   if (body.status) {

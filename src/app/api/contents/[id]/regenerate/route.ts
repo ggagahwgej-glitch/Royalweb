@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, audit } from '@/lib/api';
 import { get, nowIso, run } from '@/lib/db';
 import { getAdapter } from '@/lib/platforms';
@@ -22,7 +23,7 @@ export const POST = handler(async (_req, ctx, auth) => {
     id,
     auth.user.id
   );
-  if (!content) throw new ApiError(404, 'Content not found', 'not_found');
+  if (!content || !inWorkspace('generated_contents', id, auth)) throw new ApiError(404, 'Content not found', 'not_found');
   const adapter = getAdapter(content.platform_id);
   if (!adapter) throw new ApiError(400, 'Unknown platform', 'unknown_platform');
 
@@ -31,7 +32,7 @@ export const POST = handler(async (_req, ctx, auth) => {
     "SELECT filename FROM media_assets WHERE campaign_id = ? AND kind = 'image' AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
     content.campaign_id
   );
-  const settings = getSettings(auth.user.id);
+  const settings = getSettings(auth.user.id, auth.workspaceId ?? undefined);
   const posterBuffer = media.length ? fs.readFileSync(absoluteMediaPath(media[0].filename)) : undefined;
   const analysis = posterBuffer
     ? await analyzePoster(posterBuffer, settings, { campaignId: content.campaign_id })

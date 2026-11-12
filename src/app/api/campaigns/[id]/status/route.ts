@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, parseBody, audit } from '@/lib/api';
 import { get, nowIso, run } from '@/lib/db';
 import { z } from 'zod';
@@ -15,7 +16,7 @@ export const POST = handler(async (req, ctx, auth) => {
     id,
     auth.user.id
   );
-  if (!campaign) throw new ApiError(404, 'Campaign not found', 'not_found');
+  if (!campaign || !inWorkspace('campaigns', id, auth)) throw new ApiError(404, 'Campaign not found', 'not_found');
 
   if (action === 'pause') {
     run("UPDATE campaigns SET status = 'paused', updated_at = ? WHERE id = ?", nowIso(), id);

@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, parseBody, audit } from '@/lib/api';
 import { get, nowIso, run } from '@/lib/db';
 import { contentPatchSchema } from '@/lib/validation';
@@ -6,28 +7,28 @@ import { contentFingerprint } from '@/lib/content-hash';
 
 export const dynamic = 'force-dynamic';
 
-function loadOwned(contentId: string, userId: string) {
+function loadOwned(contentId: string, auth: { user: { id: string }; workspaceId: string | null }) {
   return get<Record<string, unknown>>(
     `SELECT gc.*, p.name AS platform_name, p.automation FROM generated_contents gc
        JOIN platforms p ON p.id = gc.platform_id
        JOIN campaigns c ON c.id = gc.campaign_id
       WHERE gc.id = ? AND c.user_id = ?`,
     contentId,
-    userId
+    auth.user.id
   );
 }
 
 export const GET = handler(async (_req, ctx, auth) => {
   const { id } = await ctx.params;
-  const row = loadOwned(id, auth.user.id);
-  if (!row) throw new ApiError(404, 'Content not found', 'not_found');
+  const row = loadOwned(id, auth);
+  if (!row || !inWorkspace('generated_contents', id, auth)) throw new ApiError(404, 'Content not found', 'not_found');
   return jsonOk({ content: contentOut(row) });
 });
 
 export const PATCH = handler(async (req, ctx, auth) => {
   const { id } = await ctx.params;
-  const row = loadOwned(id, auth.user.id);
-  if (!row) throw new ApiError(404, 'Content not found', 'not_found');
+  const row = loadOwned(id, auth);
+  if (!row || !inWorkspace('generated_contents', id, auth)) throw new ApiError(404, 'Content not found', 'not_found');
   const body = await parseBody(req, contentPatchSchema);
 
   const sets: string[] = [];
@@ -79,6 +80,6 @@ export const PATCH = handler(async (req, ctx, auth) => {
   );
   run(`UPDATE generated_contents SET ${sets.join(', ')} WHERE id = ?`, ...values);
   await audit('content.updated', 'generated_content', id, auth.user.id, { status: body.status });
-  const updated = loadOwned(id, auth.user.id);
+  const updated = loadOwned(id, auth);
   return jsonOk({ content: contentOut(updated!) });
 });

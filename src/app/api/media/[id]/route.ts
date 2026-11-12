@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, parseBody, audit } from '@/lib/api';
 import { get, run, nowIso } from '@/lib/db';
 import { mediaPatchSchema } from '@/lib/validation';
@@ -13,7 +14,7 @@ export const GET = handler(async (req, ctx, auth) => {
     id,
     auth.user.id
   );
-  if (!row) throw new ApiError(404, 'Media not found', 'not_found');
+  if (!row || !inWorkspace('media_assets', id, auth)) throw new ApiError(404, 'Media not found', 'not_found');
   return jsonOk({ media: row });
 });
 
@@ -21,7 +22,7 @@ export const PATCH = handler(async (req, ctx, auth) => {
   const { id } = await ctx.params;
   const body = await parseBody(req, mediaPatchSchema);
   const row = get<{ id: string }>('SELECT id FROM media_assets WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, auth.user.id);
-  if (!row) throw new ApiError(404, 'Media not found', 'not_found');
+  if (!row || !inWorkspace('media_assets', id, auth)) throw new ApiError(404, 'Media not found', 'not_found');
   if (body.altText !== undefined) run('UPDATE media_assets SET alt_text = ? WHERE id = ?', body.altText, id);
   if (body.originalName !== undefined) run('UPDATE media_assets SET original_name = ? WHERE id = ?', body.originalName, id);
   if (body.campaignId !== undefined) run('UPDATE media_assets SET campaign_id = ? WHERE id = ?', body.campaignId, id);

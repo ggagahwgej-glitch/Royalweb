@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, audit } from '@/lib/api';
 import { all, get, newId, nowIso, run, tx } from '@/lib/db';
 import { getAdapter, ADAPTERS } from '@/lib/platforms';
@@ -20,6 +21,7 @@ export const POST = handler(async (req, ctx, auth) => {
   enforceRateLimit(`generate:${auth.user.id}`, 25, 600);
 
   const campaign = get<Record<string, unknown>>('SELECT * FROM campaigns WHERE id = ? AND user_id = ?', id, auth.user.id);
+  if (!campaign || !inWorkspace('campaigns', id, auth)) throw new ApiError(404, 'Campaign not found', 'not_found');
   if (!campaign) throw new ApiError(404, 'Campaign not found', 'not_found');
 
   const body = await req.json().catch(() => ({}));
@@ -33,7 +35,7 @@ export const POST = handler(async (req, ctx, auth) => {
     .filter((a): a is NonNullable<typeof a> => Boolean(a));
   if (!adapters.length) throw new ApiError(400, 'No valid platforms selected', 'no_platforms');
 
-  const settings = getSettings(auth.user.id);
+  const settings = getSettings(auth.user.id, auth.workspaceId ?? undefined);
   const media = all<{ id: string }>(
     "SELECT id FROM media_assets WHERE campaign_id = ? AND deleted_at IS NULL AND kind = 'image' LIMIT 1",
     id

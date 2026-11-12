@@ -201,6 +201,8 @@ compliance guard and suppression list — runs against the real application and 
 | T44 | Workspaces isolate accounts, campaigns and sender identity | pass — new workspace shows 0 campaigns / 0 accounts, switching back restores the original |
 | T45 | Every platform ships a Get-Key deep link, a one-line instruction and a tier | pass — 25/25 links are `https`, no metadata gaps, tiers match the adapters |
 | T46 | Bulk paste grid saves and verifies in one action | pass — 1 connected, 1 honest failure (unreachable Ghost), 1 skipped, ciphertext encrypted, no unscoped rows |
+| T47 | A resource from another workspace is invisible and untouchable | pass — campaign, media (PATCH + file), content, job list, analytics and account DELETE all refuse with 404/empty while another workspace is active; the owner's credential ciphertext is unchanged and a same-named account is created under a distinct name instead of overwriting |
+| T48 | Pausing keeps the original slot, restores attempts and resumes publishing | pass — job released as `scheduled` with `scheduled_at` untouched, `attempts` back to 0 after two paused ticks, publishes after the pause is lifted |
 
 The suite now starts local doubles for the Telegram Bot API (3998), an RSS feed (3997) and an IMAP server
 (9143) so every outbound call is a real network round trip that the test can inspect. The production

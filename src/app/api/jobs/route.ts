@@ -19,8 +19,11 @@ export const GET = handler(async (req, _ctx, auth) => {
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 100), 300);
   const statuses = STATUS_ALIASES[status] ?? [];
 
-  const where: string[] = ['c.user_id = ?'];
-  const params: unknown[] = [auth.user.id];
+  const where: string[] = [
+    'c.user_id = ?',
+    "(c.workspace_id = ? OR (c.workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))",
+  ];
+  const params: unknown[] = [auth.user.id, auth.workspaceId, auth.workspaceId, auth.user.id];
   if (statuses.length) {
     where.push(`j.status IN (${statuses.map(() => '?').join(',')})`);
     params.push(...statuses);

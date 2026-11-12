@@ -67,10 +67,15 @@ export function suppressEmail(email: string, reason = 'unsubscribed') {
   );
 }
 
-export function listEmailMessages(userId: string, limit = 40) {
+export function listEmailMessages(userId: string, workspaceId: string | null, limit = 40) {
   return all(
     `SELECT id, campaign_id, to_address, subject, body, template, status, error, message_id, created_at, sent_at
-       FROM email_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
+       FROM email_messages WHERE user_id = ?
+         AND (workspace_id = ? OR (workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))
+      ORDER BY created_at DESC LIMIT ?`,
+    userId,
+    workspaceId,
+    workspaceId,
     userId,
     limit
   );

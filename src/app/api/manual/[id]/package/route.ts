@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getSession } from '@/lib/auth';
+import { inWorkspace } from '@/lib/scope';
 import { all, get, json } from '@/lib/db';
 import { absoluteMediaPath, readDerivative } from '@/lib/media/storage';
 import { getAdapter } from '@/lib/platforms';
@@ -30,7 +31,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     id,
     session.user.id
   );
-  if (!task) return new Response('Not found', { status: 404 });
+  if (!task || !inWorkspace('manual_tasks', id, { user: session.user, workspaceId: session.workspaceId ?? null })) {
+    return new Response('Not found', { status: 404 });
+  }
 
   const content = get<Record<string, unknown>>(
     'SELECT * FROM generated_contents WHERE id = ?',

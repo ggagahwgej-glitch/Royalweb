@@ -6,7 +6,10 @@ import { createSnapshot, deleteSnapshot, listSnapshots, snapshotConfig, writeSna
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
-export const GET = handler(async () => {
+export const GET = handler(async (_req, _ctx, auth) => {
+  // Snapshot metadata describes the whole installation, so only an operator
+  // account may enumerate it (the download endpoint enforces the same rule).
+  if (auth.user.role !== 'admin') throw new ApiError(403, 'Admin only', 'admin_only');
   const config = snapshotConfig();
   return jsonOk({
     config,

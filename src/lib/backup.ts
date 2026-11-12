@@ -2,6 +2,7 @@ import 'server-only';
 import { all, get, newId, nowIso, run, tx } from '@/lib/db';
 import { decryptJson, encryptJson, openWithPassphrase, sealWithPassphrase, type SealedDocument } from '@/lib/crypto';
 import { exportableSecrets, KNOWN_SECRET_KEYS, setSecret } from '@/lib/secrets';
+import { activeWorkspace } from '@/lib/workspace';
 import { getAdapter } from '@/lib/platforms';
 
 /**
@@ -252,6 +253,7 @@ export function importBackup(options: {
   passphrase: string;
   mode: 'merge' | 'replace';
   userId: string;
+  workspaceId?: string | null;
 }): ImportReport {
   const { payload } = openBackupDocument(options.text, options.passphrase);
   const warnings: string[] = [];
@@ -328,13 +330,17 @@ export function importBackup(options: {
       }
 
       const id = existing?.id ?? newId();
+      // A restored credential must belong to the operator's active workspace; a
+      // NULL workspace row would be visible to every client workspace.
+      const restoreWorkspace = options.workspaceId ?? activeWorkspace(options.userId).id;
       run(
-        `INSERT INTO connected_accounts (id, platform_id, user_id, account_name, external_id, credentials_cipher,
+        `INSERT INTO connected_accounts (id, platform_id, user_id, workspace_id, account_name, external_id, credentials_cipher,
            scopes, token_expires_at, status, last_verified_at, last_error, meta_json, created_at, updated_at,
            restored_from_backup)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
          ON CONFLICT(platform_id, account_name) DO UPDATE SET
            user_id = excluded.user_id,
+           workspace_id = excluded.workspace_id,
            external_id = excluded.external_id,
            credentials_cipher = excluded.credentials_cipher,
            scopes = excluded.scopes,
@@ -348,6 +354,7 @@ export function importBackup(options: {
         id,
         platformId,
         options.userId,
+        restoreWorkspace,
         accountName,
         account.externalId ? String(account.externalId).slice(0, 300) : null,
         encryptJson(credentials),

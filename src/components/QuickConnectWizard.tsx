@@ -133,7 +133,8 @@ export function QuickConnectWizard({
       if (f.key === 'accountName') continue;
       if (raw[f.key]?.trim()) credentials[f.key] = raw[f.key].trim();
     }
-    if (raw.accountName?.trim()) credentials.accountName = raw.accountName.trim();
+    // `accountName` is a label, not a credential — sending it inside the
+    // credentials object would encrypt junk next to the real secret.
     return { platformId, accountName: raw.accountName?.trim() || undefined, credentials };
   }
 
@@ -161,7 +162,9 @@ export function QuickConnectWizard({
   }
 
   async function saveAll() {
-    const entries = platforms.map((p) => payload(p.id)).filter((e) => Object.keys(e.credentials).length > 0);
+    const entries = platforms
+      .map((p) => payload(p.id))
+      .filter((e) => Object.keys(e.credentials).length > 0 || Boolean(e.accountName));
     if (entries.length === 0) {
       push('Paste at least one key first.', 'info');
       return;

@@ -1,3 +1,4 @@
+import { inWorkspace } from '@/lib/scope';
 import { handler, jsonOk, ApiError, parseBody, audit } from '@/lib/api';
 import { get, nowIso, run } from '@/lib/db';
 import { publishJob } from '@/lib/publishing/engine';
@@ -18,7 +19,7 @@ export const POST = handler(async (req, ctx, auth) => {
     id,
     auth.user.id
   );
-  if (!job) throw new ApiError(404, 'Job not found', 'not_found');
+  if (!job || !inWorkspace('publishing_jobs', id, auth)) throw new ApiError(404, 'Job not found', 'not_found');
 
   if (action === 'cancel') {
     if (job.status === 'published') throw new ApiError(400, 'Published jobs cannot be cancelled.', 'already_published');

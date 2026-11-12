@@ -10,9 +10,13 @@ export const GET = handler(async (req, _ctx, auth) => {
     `SELECT mt.*, c.name AS campaign_name, p.name AS platform_name FROM manual_tasks mt
        JOIN campaigns c ON c.id = mt.campaign_id
        JOIN platforms p ON p.id = mt.platform_id
-      WHERE c.user_id = ? ${status && status !== 'all' ? 'AND mt.status = ?' : ''}
+      WHERE c.user_id = ?
+        AND (c.workspace_id = ? OR (c.workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))
+        ${status && status !== 'all' ? 'AND mt.status = ?' : ''}
       ORDER BY (mt.status = 'pending') DESC, mt.created_at DESC LIMIT 200`,
-    ...(status && status !== 'all' ? [auth.user.id, status] : [auth.user.id])
+    ...(status && status !== 'all'
+      ? [auth.user.id, auth.workspaceId, auth.workspaceId, auth.user.id, status]
+      : [auth.user.id, auth.workspaceId, auth.workspaceId, auth.user.id])
   );
 
   const tasks = rows.map((row) => {

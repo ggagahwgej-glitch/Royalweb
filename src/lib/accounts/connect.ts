@@ -46,6 +46,8 @@ export async function connectAccount(input: ConnectInput): Promise<ConnectResult
 
   const credentialsInput: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.credentials ?? {})) {
+    // `accountName` travels beside the credentials, never inside them.
+    if (k === 'accountName') continue;
     if (typeof v === 'string' && v.trim()) credentialsInput[k] = v.trim();
   }
 
@@ -73,12 +75,43 @@ export async function connectAccount(input: ConnectInput): Promise<ConnectResult
     };
   }
 
-  const accountName = verification.accountName || input.accountName?.trim() || adapter.name;
-  const existing = get<{ id: string }>(
-    'SELECT id FROM connected_accounts WHERE platform_id = ? AND account_name = ?',
+  const baseName = verification.accountName || input.accountName?.trim() || adapter.name;
+  // The database has a UNIQUE (platform_id, account_name) constraint, so two
+  // clients connecting a same-titled WordPress site (or two "Telegram channel"
+  // accounts) would otherwise overwrite each other's credentials. A name that
+  // collides across workspaces is disambiguated instead of hijacked.
+  let accountName = baseName;
+  const sameWorkspace = get<{ id: string }>(
+    'SELECT id FROM connected_accounts WHERE platform_id = ? AND account_name = ? AND workspace_id IS ?',
     input.platformId,
-    accountName
+    accountName,
+    input.workspaceId
   );
+  if (!sameWorkspace) {
+    const collides = get<{ id: string }>(
+      'SELECT id FROM connected_accounts WHERE platform_id = ? AND account_name = ?',
+      input.platformId,
+      accountName
+    );
+    if (collides) {
+      const label = get<{ name: string }>('SELECT name FROM workspaces WHERE id = ?', input.workspaceId ?? '')?.name;
+      const suffix = label?.trim() || 'workspace';
+      let candidate = `${baseName} · ${suffix}`;
+      let n = 2;
+      while (
+        get<{ id: string }>(
+          'SELECT id FROM connected_accounts WHERE platform_id = ? AND account_name = ?',
+          input.platformId,
+          candidate
+        )
+      ) {
+        candidate = `${baseName} · ${suffix} ${n}`;
+        n += 1;
+      }
+      accountName = candidate;
+    }
+  }
+  const existing = sameWorkspace;
   const credentials = { ...credentialsInput };
   if (verification.meta) {
     for (const [k, v] of Object.entries(verification.meta)) {

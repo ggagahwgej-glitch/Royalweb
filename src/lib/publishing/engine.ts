@@ -61,6 +61,7 @@ interface CampaignRow {
 }
 
 interface AccountRow {
+  workspace_id?: string | null;
   id: string;
   platform_id: string;
   account_name: string;
@@ -148,12 +149,22 @@ export async function publishJob(
       retryable: boolean;
       nextAttemptAt: string | null;
       release: boolean;
+      /**
+       * A pause is not a failed attempt. Releasing for a pause gives the attempt
+       * back, otherwise a campaign that sits paused for a day would burn its
+       * whole retry budget before it was ever really published.
+       */
+      restoreAttempts?: boolean;
     }> = {}
   ): PublishOutcome => {
+    // Releasing never rewrites `scheduled_at`: the slot the operator chose is
+    // history. Retry timing lives in `next_attempt_at`, which the due query
+    // already honours — moving scheduled_at used to silently shift a paused
+    // post to "pause time + 10 minutes" and lose the original calendar entry.
     run(
       `UPDATE publishing_jobs SET status = ?, error = ?, error_code = ?, published_url = ?, external_id = ?,
          retryable = ?, next_attempt_at = ?, locked_at = NULL,
-         scheduled_at = CASE WHEN ? THEN ? ELSE scheduled_at END, updated_at = ?
+         attempts = CASE WHEN ? THEN MAX(attempts - 1, 0) ELSE attempts END, updated_at = ?
        WHERE id = ?`,
       status,
       message.slice(0, 2000),
@@ -162,8 +173,7 @@ export async function publishJob(
       extra.externalId ?? null,
       extra.retryable === false ? 0 : 1,
       extra.nextAttemptAt ?? null,
-      extra.release ? 1 : 0,
-      extra.release ? (extra.nextAttemptAt ?? nowIso()) : nowIso(),
+      extra.restoreAttempts ? 1 : 0,
       nowIso(),
       jobId
     );
@@ -182,7 +192,12 @@ export async function publishJob(
     claimed.platform_id
   );
   const adapter = getAdapter(claimed.platform_id);
-  const userSettings = campaign ? getSettings(String(campaign.user_id)) : null;
+  // Settings are per workspace: reading the *active* workspace's settings while
+  // publishing another client's campaign would apply the wrong business profile
+  // and the wrong pause flag.
+  const userSettings = campaign
+    ? getSettings(String(campaign.user_id), String(campaign.workspace_id ?? '') || undefined)
+    : null;
 
   if (!campaign) {
     log(claimed, 'error', 'campaign', 'Campaign no longer exists');
@@ -204,6 +219,7 @@ export async function publishJob(
       retryable: true,
       nextAttemptAt: new Date(Date.now() + 10 * 60_000).toISOString(),
       release: true,
+      restoreAttempts: true,
     });
   }
 
@@ -218,6 +234,19 @@ export async function publishJob(
         String(campaign.user_id),
         String(campaign.workspace_id ?? '')
       );
+
+  if (
+    account &&
+    account.workspace_id &&
+    campaign.workspace_id &&
+    String(account.workspace_id) !== String(campaign.workspace_id)
+  ) {
+    log(claimed, 'error', 'account', 'Job points at an account from a different workspace');
+    return finish('connection_expired', 'That account belongs to another workspace. Re-schedule with an account from this workspace.', {
+      errorCode: 'account_workspace_mismatch',
+      retryable: false,
+    });
+  }
 
   if (!account) {
     const message = `${platform.name} has no connected account. Connect one in Connected Accounts, or use the manual publishing package.`;
@@ -394,7 +423,9 @@ export async function publishJob(
     }
   }
 
-  const business = businessProfile(userSettings ?? getSettings(String(campaign.user_id)));
+  const business = businessProfile(
+    userSettings ?? getSettings(String(campaign.user_id), String(campaign.workspace_id ?? '') || undefined)
+  );
   const idempotencyKey = claimed.idempotency_key;
 
   log(claimed, 'info', 'publish', `Calling ${adapter.name} (${opts.trigger ?? 'worker'})`, {
