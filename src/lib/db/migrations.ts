@@ -350,4 +350,33 @@ export const migrations: Migration[] = [
     CREATE INDEX IF NOT EXISTS idx_worker_heartbeats_started ON worker_heartbeats(started_at DESC);
     `,
   },
+  {
+    version: 4,
+    name: 'email_outreach',
+    sql: `
+    CREATE TABLE IF NOT EXISTS email_messages (
+      id            TEXT PRIMARY KEY,
+      user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      campaign_id   TEXT,
+      to_address    TEXT NOT NULL,
+      subject       TEXT NOT NULL,
+      body          TEXT NOT NULL,
+      template      TEXT NOT NULL DEFAULT 'custom',
+      status        TEXT NOT NULL DEFAULT 'queued',
+      error         TEXT,
+      message_id    TEXT,
+      accepted_json TEXT,
+      rejected_json TEXT,
+      created_at    TEXT NOT NULL,
+      sent_at       TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_messages_user ON email_messages(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS email_suppressions (
+      email      TEXT PRIMARY KEY,
+      reason     TEXT NOT NULL DEFAULT 'unsubscribed',
+      created_at TEXT NOT NULL
+    );
+    `,
+  },
 ];

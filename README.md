@@ -30,6 +30,8 @@ complete, downloadable publishing package and tracks it as a manual task.
 | AI assistant that plans but never publishes autonomously | ✅ working |
 | Security center: sessions, audit log, credential health, password rotation | ✅ working |
 | Self-diagnosis + audited repairs (worker, queue, encryption, disk, connections) | ✅ working |
+| Email outreach from your own verified SMTP address, with compliance guard | ✅ working |
+| Expert writing layer (voice, quality gate, pricing/objection guidance) | ✅ working |
 | YouTube Shorts video rendering | ⚠️ requires `ffmpeg` on the server (Poster→MP4 renderer) |
 
 ### The 25 platforms
@@ -93,7 +95,7 @@ scheduling persistence, pause behaviour, manual packages, error reporting and se
 pass/fail table; anything requiring third-party credentials is reported as *skipped, needs credentials*
 rather than faked.
 
-**Last recorded run:** 40 passed · 0 failed · 1 skipped (41 checks) on Node 22 / Next 15.5.29 — full output,
+**Last recorded run:** 48 passed · 0 failed · 1 skipped (49 checks) on Node 22 / Next 15.5.29 — full output,
 including how each requirement was proven and what was *not* executed, is in
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
 
@@ -104,7 +106,7 @@ including how each requirement was proven and what was *not* executed, is in
 ```
 src/
   app/
-    login, dashboard/*              15 dashboard sections (server-rendered shells)
+    login, dashboard/*              16 dashboard sections (server-rendered shells)
     api/                            REST surface (auth, media, campaigns, jobs, accounts, oauth…)
   components/                       Design system + interactive views
   lib/
@@ -115,6 +117,9 @@ src/
     ai/                             Provider-agnostic AI layer + template engine
     publishing/                     Job engine + in-process worker
     diagnostics.ts                  Self-diagnosis + audited repairs
+    email/                          SMTP sender, templates, AI drafting, suppression
+    ai/expertise.ts                 Voice, platform craft, objections, ethics
+    ai/quality.ts                   Spam/shouting/limit clean-up + claim flags
     errors/guide.ts                 Failure → escape-route catalogue
     settings.ts time.ts validation.ts
   instrumentation.ts                Starts the publishing worker once per server process
@@ -162,7 +167,10 @@ Nothing can be published without an approved content row and a `connected` accou
 
 See [docs/SECURITY.md](docs/SECURITY.md) for the threat model and operational checklist, and
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for the recovery playbook (every failure trap, its cause
-and the exact escape route — including what the app deliberately refuses to bypass).
+and the exact escape route — including what the app deliberately refuses to bypass),
+[docs/EMAIL.md](docs/EMAIL.md) for SMTP/DNS/compliance setup, and
+[docs/EXPERT_PLAYBOOK.md](docs/EXPERT_PLAYBOOK.md) for the writing, pricing and platform standard the
+generator and assistant are held to.
 
 ---
 
@@ -183,6 +191,9 @@ and the exact escape route — including what the app deliberately refuses to by
   implemented anywhere. When a platform blocks or gates something, ROYALWEB reports it and offers the manual
   package instead.
 - **Group C platforms** are never automated — no browser automation, no login bypass, no CAPTCHA solving.
+- **Email is sent from your address, not a fabricated one.** There is no virtual mailbox, no spoofed sender
+  and no throwaway identity. You supply SMTP credentials for a mailbox on your own domain; the app enforces
+  an opt-out route and permanent suppression.
 - **Platform marks are not official logos.** Each platform is shown with an original letter mark in its
   brand colour (`PlatformMark.tsx`) to avoid shipping third-party trademark assets; swap in licensed logos
   if you have permission.

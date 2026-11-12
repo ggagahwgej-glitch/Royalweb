@@ -2,7 +2,7 @@
   "name": "royalweb-autopilot",
   "version": "1.0.0",
   "private": true,
-  "description": "ROYALWEB AUTOPILOT \u2014 AI-powered multi-platform social media publishing, marketing distribution & content automation system.",
+  "description": "ROYALWEB AUTOPILOT — AI-powered multi-platform social media publishing, marketing distribution & content automation system.",
   "scripts": {
     "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
@@ -15,9 +15,11 @@
     "acceptance": "node scripts/acceptance.mjs"
   },
   "dependencies": {
+    "@types/nodemailer": "^8.0.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
     "next": "^15.1.6",
+    "nodemailer": "^10.5.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sharp": "^0.33.5",

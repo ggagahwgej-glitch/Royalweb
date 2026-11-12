@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowUpRight, Bot, Send, Sparkles, User } from 'lucide-react';
+import { ArrowUpRight, Bot, ClipboardCopy, Send, Sparkles, User } from 'lucide-react';
 import {
   api,
   Badge,
@@ -46,6 +46,7 @@ interface AssistantResponse {
     title: string;
     steps: string[];
   } | null;
+  draft: { kind: string; subject: string; body: string; template: string } | null;
   counts: { total: number; connected: number; notConnected: number; manual: number };
   suggestedActions: { id: string; label: string; href?: string; repair?: string }[];
 }
@@ -268,6 +269,30 @@ export function AssistantView() {
                           </li>
                         ))}
                       </ol>
+                    </div>
+                  ) : null}
+
+                  {message.response?.draft ? (
+                    <div className="mt-2.5 rounded-xl border border-white/[0.07] bg-obsidian-900/60 p-3 text-left">
+                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] uppercase tracking-wider text-gold-500">Draft · not sent</span>
+                        <Badge tone="neutral">{message.response.draft.template}</Badge>
+                        <button
+                          onClick={() => {
+                            void navigator.clipboard?.writeText(
+                              `Subject: ${message.response?.draft?.subject}\n\n${message.response?.draft?.body}`
+                            );
+                            push('Draft copied', 'success');
+                          }}
+                          className="ml-auto inline-flex items-center gap-1 text-[10.5px] text-ink-400 hover:text-ink-200"
+                        >
+                          <ClipboardCopy size={11} /> Copy
+                        </button>
+                      </div>
+                      <div className="text-[11.5px] font-medium text-ink-100">{message.response.draft.subject}</div>
+                      <pre className="mt-1 max-h-56 overflow-y-auto whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-ink-400">
+                        {message.response.draft.body}
+                      </pre>
                     </div>
                   ) : null}
 

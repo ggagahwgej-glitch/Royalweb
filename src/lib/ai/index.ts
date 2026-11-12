@@ -8,6 +8,8 @@ import { generateLocalContent, localHashtags } from './local';
 import type { AiPart, GeneratedContent, PosterAnalysis } from './types';
 import { AiNotConfiguredError } from './types';
 import { resolveProvider } from './providers';
+import { expertBrief } from './expertise';
+import { reviewContent, summariseQuality, ensureUniqueCaptions, type QualityIssue } from './quality';
 
 export interface CampaignInput {
   id: string;
@@ -158,27 +160,6 @@ export async function analyzePoster(
   }
 }
 
-function sanitize(item: GeneratedContent, adapter: PlatformAdapter): GeneratedContent {
-  const max = adapter.limits;
-  const clip = (v: unknown, n: number) => {
-    const s = String(v ?? '').trim();
-    return s.length <= n ? s : `${s.slice(0, n - 1).trimEnd()}…`;
-  };
-  const tags = Array.isArray(item.hashtags)
-    ? [...new Set(item.hashtags.map((h) => String(h).replace(/^#/, '').replace(/[^A-Za-z0-9_]/g, '')).filter(Boolean))]
-    : [];
-  return {
-    platform: adapter.id,
-    title: clip(item.title, max.title ?? 200),
-    caption: clip(item.caption, max.caption),
-    description: clip(item.description, Math.max(max.caption, 2000)),
-    hashtags: tags.slice(0, max.hashtags ?? 5),
-    cta: clip(item.cta, 160),
-    altText: clip(item.altText || item.title, 300),
-    extra: typeof item.extra === 'object' && item.extra ? item.extra : {},
-  };
-}
-
 export interface GenerationOutcome {
   contents: GeneratedContent[];
   provider: string;
@@ -202,11 +183,20 @@ export async function generateContent(input: {
 }): Promise<GenerationOutcome> {
   const { campaign, settings, analysis, adapters } = input;
   const business = businessProfile(settings);
+  const qualityIssues: { platform: string; issues: QualityIssue[] }[] = [];
+  const polish = (item: GeneratedContent, adapter: PlatformAdapter): GeneratedContent => {
+    const reviewed = reviewContent(item, adapter.limits, { platformLabel: adapter.name });
+    qualityIssues.push({ platform: adapter.id, issues: reviewed.issues });
+    return reviewed.content;
+  };
   const local = (adapter: PlatformAdapter) =>
-    sanitize(
-      generateLocalContent({ campaign, business, analysis, adapter }) as GeneratedContent,
-      adapter
-    );
+    polish(generateLocalContent({ campaign, business, analysis, adapter }) as GeneratedContent, adapter);
+  const labels = Object.fromEntries(adapters.map((a) => [a.id, a.name]));
+  const finalise = (items: GeneratedContent[]): GeneratedContent[] => {
+    const unique = ensureUniqueCaptions(items, labels);
+    qualityIssues.push({ platform: 'all', issues: unique.issues });
+    return unique.contents;
+  };
 
   const provider = resolveProvider(settings.aiProvider, settings.aiModel);
   if (!provider) {
@@ -219,11 +209,11 @@ export async function generateContent(input: {
       );
     }
     return {
-      contents: adapters.map(local),
+      contents: finalise(adapters.map(local)),
       provider: 'built-in template engine',
       model: 'royalweb-templates-v1',
       mode: 'template',
-      notices,
+      notices: [...notices, ...summariseQuality(qualityIssues)],
     };
   }
 
@@ -282,7 +272,9 @@ export async function generateContent(input: {
       [
         {
           role: 'system',
-          content: `You are ROYALWEB AUTOPILOT's senior social media strategist. You write distinct, platform-native marketing content for a website design business. You never invent facts: if a price, phone number or claim is not in the supplied data or visible on the poster, you leave it out. Return only valid JSON matching the requested shape. Keep within each platform's limits. Use the requested language (${campaign.language || 'English'}).`,
+          content: `${expertBrief(adapters.map((a) => a.id))}
+
+You write distinct, platform-native marketing content for this business. Return only valid JSON matching the requested shape. Keep within each platform's limits. Use the requested language (${campaign.language || 'English'}).`,
         },
         { role: 'user', content: messageContent },
       ],
@@ -298,7 +290,7 @@ export async function generateContent(input: {
     for (const adapter of adapters) {
       const found = byPlatform.get(adapter.id);
       if (found && (found.caption || found.description || found.title)) {
-        contents.push(sanitize({ ...found, platform: adapter.id }, adapter));
+        contents.push(polish({ ...found, platform: adapter.id }, adapter));
       } else {
         missing.push(adapter.name);
         contents.push(local(adapter));
@@ -317,6 +309,7 @@ export async function generateContent(input: {
     });
 
     const notices: string[] = [];
+    const qualityNotices = summariseQuality(qualityIssues);
     if (missing.length) {
       notices.push(`The AI did not return usable copy for ${missing.join(', ')} — the template engine filled those in. Review them before approving.`);
     }
@@ -324,11 +317,11 @@ export async function generateContent(input: {
       notices.push('The AI analysed your poster image and generated platform-specific copy.');
     }
     return {
-      contents,
+      contents: finalise(contents),
       provider: res.provider,
       model: res.model,
       mode: missing.length ? 'mixed' : 'ai',
-      notices,
+      notices: [...notices, ...qualityNotices, ...summariseQuality(qualityIssues.slice(-1))],
     };
   } catch (err) {
     logAi({
@@ -341,13 +334,14 @@ export async function generateContent(input: {
       error: (err as Error).message.slice(0, 500),
     });
     return {
-      contents: adapters.map(local),
+      contents: finalise(adapters.map(local)),
       provider: 'built-in template engine',
       model: 'royalweb-templates-v1',
       mode: 'template',
       notices: [
         `AI provider "${provider.label}" failed: ${(err as Error).message.slice(0, 300)}`,
         'Fell back to the built-in template engine. Fix the provider in Settings → AI and regenerate if you want AI copy.',
+        ...summariseQuality(qualityIssues),
       ],
     };
   }

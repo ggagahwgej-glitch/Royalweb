@@ -12,6 +12,7 @@
  *   TEST_BASE_URL=https://your-host npm run acceptance
  */
 import http from 'node:http';
+import net from 'node:net';
 import crypto from 'node:crypto';
 import sharp from 'sharp';
 import { DatabaseSync } from 'node:sqlite';
@@ -19,6 +20,7 @@ import { DatabaseSync } from 'node:sqlite';
 const BASE = (process.env.TEST_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
 const DB_PATH = process.env.TEST_DB_PATH || 'data/royalweb.db';
 const MOCK_PORT = Number(process.env.TEST_MOCK_PORT || 3999);
+const SMTP_PORT = Number(process.env.TEST_SMTP_PORT || 2525);
 const EMAIL = process.env.TEST_EMAIL || 'acceptance@royalweb.local';
 const PASSWORD = process.env.TEST_PASSWORD || 'Acceptance-Test-Pass-2026';
 
@@ -120,6 +122,87 @@ function startMock() {
   });
 }
 
+// ─────────────────────────────────────────────────────── mock SMTP server
+
+const smtp = { messages: [], connections: 0 };
+
+function startSmtp() {
+  return new Promise((resolve) => {
+    const tcp = net.createServer((socket) => {
+      smtp.connections += 1;
+      let buffer = '';
+      let inData = false;
+      let data = '';
+      let authUser = '';
+      let expectingUser = false;
+      let expectingPass = false;
+      const send = (line) => socket.write(`${line}\r\n`);
+      send('220 acceptance.local ESMTP ready');
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        let idx;
+        while ((idx = buffer.indexOf('\r\n')) !== -1) {
+          const line = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          if (inData) {
+            if (line === '.') {
+              inData = false;
+              smtp.messages.push(data);
+              data = '';
+              send('250 2.0.0 queued as acceptance');
+            } else {
+              data += `${line}\n`;
+            }
+            continue;
+          }
+          if (expectingUser) {
+            authUser = Buffer.from(line, 'base64').toString();
+            expectingUser = false;
+            expectingPass = true;
+            send('334 UGFzc3dvcmQ6');
+            continue;
+          }
+          if (expectingPass) {
+            expectingPass = false;
+            send('235 2.7.0 Authentication successful');
+            continue;
+          }
+          const upper = line.toUpperCase();
+          if (upper.startsWith('EHLO')) {
+            send('250-acceptance.local');
+            send('250-AUTH PLAIN LOGIN');
+            send('250 SIZE 10485760');
+          } else if (upper.startsWith('AUTH LOGIN')) {
+            send('334 VXNlcm5hbWU6');
+            expectingUser = true;
+          } else if (upper.startsWith('AUTH PLAIN')) {
+            const parts = line.split(' ');
+            const payload = parts[2] ? Buffer.from(parts[2], 'base64').toString() : '';
+            authUser = payload.split('\u0000')[1] ?? '';
+            send('235 2.7.0 Authentication successful');
+          } else if (upper.startsWith('MAIL FROM')) {
+            send('250 2.1.0 OK');
+          } else if (upper.startsWith('RCPT TO')) {
+            send('250 2.1.5 OK');
+          } else if (upper === 'DATA') {
+            inData = true;
+            send('354 End data with <CR><LF>.<CR><LF>');
+          } else if (upper === 'QUIT') {
+            send('221 2.0.0 Bye');
+            socket.end();
+          } else if (upper === 'RSET' || upper === 'NOOP') {
+            send('250 OK');
+          } else {
+            send('250 OK');
+          }
+        }
+      });
+      socket.on('error', () => undefined);
+    });
+    tcp.listen(SMTP_PORT, '127.0.0.1', () => resolve(tcp));
+  });
+}
+
 // ─────────────────────────────────────────────────────────── helpers
 
 async function makePoster(label, width = 1200, height = 1500) {
@@ -184,7 +267,8 @@ function sha(buf) {
 async function main() {
   console.log(`\nROYALWEB AUTOPILOT — acceptance suite against ${BASE}\n`);
   const mockServer = await startMock();
-  console.log(`· mock WordPress API listening on 127.0.0.1:${MOCK_PORT} (test double)\n`);
+  const smtpServer = await startSmtp();
+  console.log(`· mock WordPress API on 127.0.0.1:${MOCK_PORT} · mock SMTP on 127.0.0.1:${SMTP_PORT} (test doubles)\n`);
 
   try {
     // TEST 1 — authentication
@@ -574,6 +658,117 @@ async function main() {
       `first attempt=${dupState?.status} · forced=${forcedState ?? forced.json?.error}`
     );
 
+    // TEST 25–29 — email channel, compliance guard and the expert layer
+    await req('/api/email/config', {
+      method: 'POST',
+      body: {
+        host: '127.0.0.1',
+        port: SMTP_PORT,
+        user: 'outreach@royalweb.test',
+        pass: 'app-password',
+        fromAddress: 'hello@royalweb.test',
+        fromName: 'ROYALWEB',
+        replyTo: 'hello@royalweb.test',
+        postalAddress: 'GS Road, Guwahati, Assam 781005',
+        unsubscribeUrl: '',
+      },
+    });
+    const verifyEmail = unwrap(await req('/api/email/verify', { method: 'POST', body: {} }));
+    record(
+      'T25',
+      'SMTP configuration is verified with a real handshake',
+      verifyEmail.ok === true ? 'pass' : 'fail',
+      verifyEmail.message?.slice(0, 110)
+    );
+
+    const draft = unwrap(
+      await req('/api/email/draft', {
+        method: 'POST',
+        body: {
+          template: 'intro',
+          recipientName: 'Ravi',
+          recipientBusiness: 'Ravi Kitchen',
+          brief: 'Their restaurant site is slow on mobile and they want more table bookings.',
+        },
+      })
+    );
+    record(
+      'T26',
+      'Email draft is professional, specific and carries an opt-out',
+      draft.subject && draft.body.length > 200 && /reply .?stop|unsubscribe/i.test(draft.body) ? 'pass' : 'fail',
+      `${draft.mode} · ${draft.body.split(/\s+/).length} words`
+    );
+
+    const noOptOutRecipient = `optout-${Date.now()}@example.test`;
+    const blockedSend = await req('/api/email/send', {
+      method: 'POST',
+      body: { to: noOptOutRecipient, subject: 'Testing the guard', body: 'This body deliberately has no way out of the list. It should be refused before any SMTP call.', template: 'custom' },
+    });
+    record(
+      'T27',
+      'Compliance guard blocks email with no opt-out route',
+      blockedSend.status === 400 && blockedSend.json?.code === 'missing_opt_out' ? 'pass' : 'fail',
+      `HTTP ${blockedSend.status} ${blockedSend.json?.code ?? ''}`
+    );
+
+    await req('/api/email/config', { method: 'POST', body: { unsubscribeUrl: 'https://royalweb.test/unsubscribe' } });
+    const recipient = `ravi-${Date.now()}@example.test`;
+    const sendRes = unwrap(
+      await req('/api/email/send', {
+        method: 'POST',
+        body: { to: recipient, subject: 'A quick observation about your site', body: draft.body, template: 'intro' },
+      })
+    );
+    const captured = smtp.messages[smtp.messages.length - 1] ?? '';
+    record(
+      'T29',
+      'Email is really delivered to SMTP and the server’s answer is recorded',
+      sendRes.result?.ok === true && captured.includes(recipient) && /Subject: A quick observation/i.test(captured)
+        ? 'pass'
+        : 'fail',
+      `${smtp.messages.length} message(s) captured · status=${sendRes.result?.status}`
+    );
+    record(
+      'T29b',
+      'List-Unsubscribe headers are sent with the message',
+      /List-Unsubscribe:/i.test(captured) ? 'pass' : 'fail',
+      /List-Unsubscribe: <[^>]+>/i.exec(captured)?.[0]?.slice(0, 80) ?? 'missing'
+    );
+
+    await req('/api/email/suppress', { method: 'POST', body: { email: recipient, reason: 'replied stop' } });
+    const suppressedSend = await req('/api/email/send', {
+      method: 'POST',
+      body: { to: recipient, subject: 'Should never arrive', body: `${draft.body}\n\nReply stop to opt out.`, template: 'intro' },
+    });
+    record(
+      'T28',
+      'Opt-out is permanent and enforced before sending',
+      suppressedSend.status === 409 && suppressedSend.json?.code === 'suppressed' ? 'pass' : 'fail',
+      `HTTP ${suppressedSend.status}`
+    );
+
+    const expert = unwrap(
+      await req('/api/assistant', { method: 'POST', body: { message: 'How much should I charge, and how do I answer “I already have Instagram”?' } })
+    );
+    record(
+      'T30',
+      'Assistant answers pricing/objection questions from the expert layer',
+      expert.intent === 'expert' && /Instagram/i.test(expert.reply) && /₹|price/i.test(expert.reply) ? 'pass' : 'fail',
+      expert.intent
+    );
+
+    const emailDraft = unwrap(
+      await req('/api/assistant', { method: 'POST', body: { message: 'Write a follow-up email to Ravi about his restaurant site' } })
+    );
+    record(
+      'T30b',
+      'Assistant writes a full email draft and never sends it',
+      emailDraft.intent === 'write' && emailDraft.draft?.body && emailDraft.draft?.subject && /not been sent|Nothing has been sent/i.test(emailDraft.reply)
+        ? 'pass'
+        : 'fail',
+      emailDraft.draft ? `${emailDraft.draft.template} · ${emailDraft.draft.subject.slice(0, 40)}` : 'no draft'
+    );
+
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');
     record('X1', 'Private contact details excluded from generated content', contactHidden ? 'pass' : 'fail');
@@ -607,6 +802,7 @@ async function main() {
     record('FATAL', 'Suite aborted', 'fail', err.message);
   } finally {
     mockServer.close();
+    smtpServer.close();
   }
 
   console.log('\n──────────────────────────────────────────────────────────────');

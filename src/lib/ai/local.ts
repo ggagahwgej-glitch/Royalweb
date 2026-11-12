@@ -150,10 +150,10 @@ export function generateLocalContent(input: LocalGenInput): GeneratedContent {
 
   switch (adapter.id) {
     case 'x':
-      caption = buildShort(input, seed, 280 - url.length - cta.length - 20);
+      caption = buildShort(input, seed, 280 - url.length - cta.length - 20, 'x');
       break;
     case 'bluesky':
-      caption = buildShort(input, seed, 300 - url.length - cta.length - 24);
+      caption = buildShort(input, seed + 5, 300 - url.length - cta.length - 24, 'bluesky');
       break;
     case 'mastodon':
       caption = [
@@ -342,15 +342,22 @@ function buildTitle(input: LocalGenInput, seed: number, cat: string, service: st
   return pick(opts, seed);
 }
 
-function buildShort(input: LocalGenInput, seed: number, budget: number): string {
-  const cat = audienceLabel(input);
+function buildShort(input: LocalGenInput, seed: number, budget: number, channel: 'x' | 'bluesky'): string {
+  const cat = audienceLabel(input).toLowerCase();
   const service = serviceLabel(input);
   const cta = ctaLine(input);
-  const options = [
-    `Your ${cat.toLowerCase()} deserves a website that actually brings enquiries. ${titleCase(service)} by ${input.business.businessName}. ${cta}`,
-    `Still sending customers to a phone number? A fast one-page ${service} does the selling for you. ${cta}`,
-    `We build ${service} that load in under 2 seconds and make it obvious how to contact you. ${cta}`,
-  ];
+  const options =
+    channel === 'x'
+      ? [
+          `Most ${cat} sites are checked on a phone before anyone calls. If yours is slow, that is the enquiry you lose. ${cta}`,
+          `One page. Service, price range, one WhatsApp button. That is usually all a local ${cat.replace(/s$/, '')} business needs. ${cta}`,
+          `Still sending customers to a phone number? A fast one-page ${service} does the selling for you. ${cta}`,
+        ]
+      : [
+          `A quick observation from building sites for ${cat}: the ones that convert are boring. Clear service, clear price, one way to contact.`,
+          `If your only web presence is a social profile, people cannot check your prices without messaging you. A single page fixes that. ${cta}`,
+          `We build ${service} that load fast and say what you do in the first screen. ${cta}`,
+        ];
   const base = pick(options, seed);
   return base.length <= budget ? base : `${base.slice(0, Math.max(budget - 1, 40)).trimEnd()}…`;
 }

@@ -22,11 +22,29 @@ export type SecretKey =
   | 'oauth.slack.clientSecret'
   | 'oauth.tumblr.clientId'
   | 'oauth.tumblr.clientSecret'
-  | 'ai.baseUrl';
+  | 'ai.baseUrl'
+  | 'email.smtpHost'
+  | 'email.smtpPort'
+  | 'email.smtpUser'
+  | 'email.smtpPass'
+  | 'email.fromAddress'
+  | 'email.fromName'
+  | 'email.replyTo'
+  | 'email.postalAddress'
+  | 'email.unsubscribeUrl';
 
 const ENV_MAP: Record<string, string> = {
   'ai.apiKey': 'ROYALWEB_AI_API_KEY',
   'ai.baseUrl': 'ROYALWEB_AI_BASE_URL',
+  'email.smtpHost': 'ROYALWEB_SMTP_HOST',
+  'email.smtpPort': 'ROYALWEB_SMTP_PORT',
+  'email.smtpUser': 'ROYALWEB_SMTP_USER',
+  'email.smtpPass': 'ROYALWEB_SMTP_PASS',
+  'email.fromAddress': 'ROYALWEB_EMAIL_FROM',
+  'email.fromName': 'ROYALWEB_EMAIL_FROM_NAME',
+  'email.replyTo': 'ROYALWEB_EMAIL_REPLY_TO',
+  'email.postalAddress': 'ROYALWEB_EMAIL_POSTAL_ADDRESS',
+  'email.unsubscribeUrl': 'ROYALWEB_EMAIL_UNSUBSCRIBE_URL',
   'oauth.google.clientId': 'GOOGLE_CLIENT_ID',
   'oauth.google.clientSecret': 'GOOGLE_CLIENT_SECRET',
   'oauth.pinterest.clientId': 'PINTEREST_CLIENT_ID',

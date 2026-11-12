@@ -5,6 +5,13 @@ import { resolveProvider } from '@/lib/ai/providers';
 import { buildDiagnostics } from '@/lib/diagnostics';
 import { classifyMessage, guideFor, type ErrorGuide } from '@/lib/errors/guide';
 import { nextMorningSlot, formatInZone } from '@/lib/time';
+import { draftEmail } from '@/lib/email/draft';
+import {
+  EXPERT_SYSTEM_PROMPT,
+  PLATFORM_VOICE,
+  OBJECTION_HANDLING,
+  QUALITY_RULES,
+} from '@/lib/ai/expertise';
 import { z } from 'zod';
 
 export const dynamic = 'force-dynamic';
@@ -22,7 +29,7 @@ interface PlanItem {
   note: string;
 }
 
-type Intent = 'plan' | 'pause' | 'status' | 'diagnose' | 'explain' | 'howto' | 'help';
+type Intent = 'plan' | 'pause' | 'status' | 'diagnose' | 'explain' | 'howto' | 'write' | 'expert' | 'help';
 
 const PLATFORM_ALIASES: Record<string, string[]> = {
   wordpress: ['wordpress', 'wp'],
@@ -68,9 +75,13 @@ function detectIntent(lower: string): Intent {
     return 'explain';
   }
   if (/(pause|stop publishing|halt)/.test(lower)) return 'pause';
+  if (/(pric(e|ing)|how much|charge|quote|objection|too expensive|positioning|strategy|advice|hook|seo|copy that|headline)/.test(lower)) {
+    return 'expert';
+  }
   if (/(how do i|how to|how can i|teach|guide|walk me|steps|what should i do|help me understand)/.test(lower)) {
     return 'howto';
   }
+  if (/(write|draft|compose|email|subject line|follow.?up note)/.test(lower)) return 'write';
   if (/(status|report|summary|what.s going on|overview)/.test(lower)) return 'status';
   if (/(upload|poster|schedule|plan|publish|tomorrow|today|all platforms|campaign|hashtag|caption|seo)/.test(lower)) {
     return 'plan';
@@ -172,6 +183,7 @@ export const POST = handler(async (req, _ctx, auth) => {
   const diagnostics = wantsDiagnosis ? await buildDiagnostics(auth.user.id) : null;
 
   const suggestedActions: { id: string; label: string; href?: string; repair?: string }[] = [];
+  let draftResponse: { kind: string; subject: string; body: string; template: string } | null = null;
   let reply = '';
 
   if (intent === 'diagnose' && diagnostics) {
@@ -254,6 +266,98 @@ export const POST = handler(async (req, _ctx, auth) => {
     ].join('\n');
     suggestedActions.push({ id: 'open-diagnostics', label: 'Diagnostics', href: '/dashboard/diagnostics' });
     suggestedActions.push({ id: 'open-failed', label: 'Failed posts', href: '/dashboard/failed' });
+  } else if (intent === 'write') {
+    const wantsEmail = /(email|e-mail|mail|outreach|follow.?up)/.test(lower);
+    if (wantsEmail) {
+      const template =
+        /(follow.?up|chase)/.test(lower) ? 'follow_up'
+        : /(proposal|quote|scope)/.test(lower) ? 'proposal'
+        : /(review|testimonial)/.test(lower) ? 'review_request'
+        : 'intro';
+      const emailInMessage = /[^\s@]+@[^\s@]+\.[A-Za-z]{2,}/.exec(message)?.[0];
+      const recipientBusiness =
+        /(?:to|for)\s+([A-Z][\w&'’-]*(?:\s+[A-Z][\w&'’-]*){0,3})/.exec(message)?.[1] ?? '';
+      const draft = await draftEmail({
+        userId: auth.user.id,
+        template,
+        recipientName: '',
+        recipientBusiness,
+        brief: message,
+      });
+      reply = [
+        'Here is a draft written to the standard of a careful human, not a mail-merge:',
+        '',
+        `Subject: ${draft.subject}`,
+        '',
+        draft.body,
+        '',
+        `Mode: ${draft.mode === 'ai' ? 'AI rewrite, facts unchanged' : 'built-in professional template'}.`,
+        'Nothing has been sent. Open it in the composer, edit anything that does not sound like you, then send from your own address.',
+      ]
+        .filter((line) => line !== '')
+        .join('\n');
+      const query = new URLSearchParams({ template });
+      if (emailInMessage) query.set('to', emailInMessage);
+      if (recipientBusiness) query.set('name', recipientBusiness);
+      suggestedActions.push({ id: 'open-email', label: 'Open in email composer', href: `/dashboard/email?${query.toString()}` });
+      draftResponse = { kind: 'email', subject: draft.subject, body: draft.body, template };
+      for (const notice of draft.notices.slice(0, 2)) {
+        reply += `\n\nNote: ${notice}`;
+      }
+    } else {
+      const voice = mentionedPlatform ? PLATFORM_VOICE[mentionedPlatform] : undefined;
+      const hooks = [
+        campaign
+          ? `“${campaign.name}” — but lead with the customer outcome, not the campaign name.`
+          : 'Lead with the customer outcome, not the service name.',
+        `Specific detail beats adjectives: use a real number, place or timeframe you can defend.`,
+        `Name the reader: ${campaign?.name ? 'the business owner reading it' : 'one kind of business'} — not “everyone”.`,
+      ];
+      reply = [
+        'Copy brief I would give a writer on this account:',
+        '',
+        `Hook: ${voice?.hookStyle ?? hooks[0]}`,
+        `Structure: ${(voice?.structure ?? ['Problem', 'Mechanism', 'Proof', 'One ask']).join(' → ')}`,
+        `Tone: ${voice?.tone ?? 'Calm, specific, first person. No hype.'}`,
+        `Avoid: ${(voice?.avoid ?? ['invented numbers', 'fake urgency', 'ALL CAPS']).join(', ')}.`,
+        '',
+        'Three openings that survive editing:',
+        ...hooks.map((h) => `• ${h}`),
+        '',
+        `House rules I will hold you to: ${QUALITY_RULES.slice(0, 3).join(' ')}`,
+        'Tell me to draft an email and I will produce a full message with a compliant footer.',
+      ].join('\n');
+      suggestedActions.push({ id: 'open-email', label: 'Draft an email', href: '/dashboard/email' });
+      if (campaign) suggestedActions.push({ id: 'open-campaign', label: 'Open campaign', href: `/dashboard/campaigns/${campaign.id}` });
+    }
+  } else if (intent === 'expert') {
+    const priceRange =
+      settings.priceMin && settings.priceMax ? `₹${settings.priceMin}–₹${settings.priceMax}` : 'your published range';
+    const objection =
+      /(instagram|social media)/.test(lower) ? OBJECTION_HANDLING[0]
+      : /(cheap|expensive|price|cost|2,?999|much)/.test(lower) ? OBJECTION_HANDLING[1]
+      : /(nephew|relative|already have)/.test(lower) ? OBJECTION_HANDLING[2]
+      : /(photo|content|copy)/.test(lower) ? OBJECTION_HANDLING[3]
+      : /(customer|lead|immediately)/.test(lower) ? OBJECTION_HANDLING[4]
+      : null;
+    const voice = mentionedPlatform ? PLATFORM_VOICE[mentionedPlatform] : undefined;
+    reply = [
+      'Here is how I would handle it, based on how this business actually sells:',
+      '',
+      objection ? `Question: ${objection.objection}\nAnswer: ${objection.answer}` : '',
+      '',
+      `Pricing position: publish ${priceRange} as a starting range, scope it in one sentence, and quote anything beyond that separately. Hidden pricing costs more enquiries than a low price ever will.`,
+      voice ? `On ${mentionedPlatform}: ${voice.tone} Hook with: ${voice.hookStyle} Avoid: ${voice.avoid.join(', ')}.` : '',
+      '',
+      'What makes this credible rather than salesy:',
+      ...QUALITY_RULES.slice(0, 4).map((rule) => `• ${rule}`),
+      '',
+      'If you want, I can turn this into platform copy or a follow-up email — I still will not publish or send anything without you.',
+    ]
+      .filter((line) => line !== '')
+      .join('\n');
+    suggestedActions.push({ id: 'open-email', label: 'Draft an email', href: '/dashboard/email' });
+    suggestedActions.push({ id: 'open-studio', label: 'Content studio', href: '/dashboard/studio' });
   } else if (intent === 'pause') {
     reply = [
       'Publishing can be paused globally or per campaign.',
@@ -324,8 +428,9 @@ export const POST = handler(async (req, _ctx, auth) => {
         [
           {
             role: 'system',
-            content:
-              'You are ROYALWEB AI ASSISTANT inside a marketing automation dashboard. Be concise, concrete and calm. Never claim a post was published. Never invent errors or statistics. Use only the supplied facts and the supplied recovery steps. You may not bypass platform approvals, paid tiers, CAPTCHAs or rate limits.',
+            content: `${EXPERT_SYSTEM_PROMPT}
+
+You are inside ROYALWEB AUTOPILOT. Answer the operator, not the customer. Be concise, concrete and calm. Never claim a post was published or an email was sent. Never invent errors, statistics or platform behaviour. Use only the supplied facts and recovery steps. You may not bypass platform approvals, paid tiers, CAPTCHAs, rate limits or consent.`,
           },
           {
             role: 'user',
@@ -420,6 +525,7 @@ export const POST = handler(async (req, _ctx, auth) => {
           steps: failureGuide?.steps ?? [],
         }
       : null,
+    draft: draftResponse,
     counts: { total: items.length, connected: connected.length, notConnected: notConnected.length, manual: manual.length },
     suggestedActions,
   });
