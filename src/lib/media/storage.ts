@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { getMasterKey } from '@/lib/crypto';
+import { dataDir } from '@/lib/runtime';
 
-const DATA_DIR = process.env.ROYALWEB_DATA_DIR || path.join(process.cwd(), 'data');
+const DATA_DIR = dataDir();
 export const UPLOAD_ROOT = path.join(DATA_DIR, 'uploads');
 
 export function ensureDirs() {

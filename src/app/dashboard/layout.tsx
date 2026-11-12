@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth';
 import { ensureBootstrap } from '@/lib/bootstrap';
 import { getSettings } from '@/lib/settings';
 import { Sidebar, PausedBanner } from '@/components/Sidebar';
+import { DeploymentBanner } from '@/components/DeploymentBanner';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +22,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       />
       <main className="mx-auto w-full max-w-[1440px] px-4 pb-16 pt-5 sm:px-6 lg:px-8 lg:pt-7">
         <PausedBanner paused={settings.globalPause} />
+        <DeploymentBanner />
         {children}
       </main>
     </div>

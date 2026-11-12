@@ -1409,6 +1409,34 @@ async function main() {
       `status=${pausedRow?.status} slot kept=${pausedRow?.scheduled_at === slotBefore} attempts=${pausedRow?.attempts} resumed=${resumedRow?.status}`
     );
 
+    // TEST 49–50 — deployment readiness: health/runtime reporting and cron auth
+    const deployHealth = await req('/api/health');
+    const healthData = deployHealth.json?.data ?? {};
+    const runtimeOk =
+      deployHealth.status === 200 &&
+      healthData.runtime?.platform === 'node' &&
+      healthData.runtime?.storage === 'persistent' &&
+      healthData.runtime?.worker === 'in-process' &&
+      Array.isArray(healthData.warnings);
+    record(
+      'T49',
+      'Health reports how the deployment is put together',
+      runtimeOk ? 'pass' : 'fail',
+      `storage=${healthData.runtime?.storage} worker=${healthData.runtime?.worker} warnings=${(healthData.warnings ?? []).length}`
+    );
+
+    const anonTick = await fetch(`${BASE}/api/worker/tick`, { method: 'GET' });
+    const anonMonitor = await fetch(`${BASE}/api/alerts/check`, { method: 'GET' });
+    const cronTick = await req('/api/worker/tick', { method: 'GET' });
+    record(
+      'T50',
+      'Cron endpoints refuse anonymous calls and accept an authenticated one',
+      anonTick.status === 401 && anonMonitor.status === 401 && cronTick.status === 200
+        ? 'pass'
+        : 'fail',
+      `anonymous=${anonTick.status}/${anonMonitor.status} · session=${cronTick.status}`
+    );
+
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');
     record('X1', 'Private contact details excluded from generated content', contactHidden ? 'pass' : 'fail');

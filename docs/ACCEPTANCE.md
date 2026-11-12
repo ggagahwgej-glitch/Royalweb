@@ -203,6 +203,8 @@ compliance guard and suppression list — runs against the real application and 
 | T46 | Bulk paste grid saves and verifies in one action | pass — 1 connected, 1 honest failure (unreachable Ghost), 1 skipped, ciphertext encrypted, no unscoped rows |
 | T47 | A resource from another workspace is invisible and untouchable | pass — campaign, media (PATCH + file), content, job list, analytics and account DELETE all refuse with 404/empty while another workspace is active; the owner's credential ciphertext is unchanged and a same-named account is created under a distinct name instead of overwriting |
 | T48 | Pausing keeps the original slot, restores attempts and resumes publishing | pass — job released as `scheduled` with `scheduled_at` untouched, `attempts` back to 0 after two paused ticks, publishes after the pause is lifted |
+| T49 | Health reports how the deployment is put together | pass — `runtime.platform=node`, `storage=persistent`, `worker=in-process`, warnings array present |
+| T50 | Cron endpoints refuse anonymous calls | pass — `GET /api/worker/tick` and `/api/alerts/check` return 401 without a session/secret and 200 with one |
 
 The suite now starts local doubles for the Telegram Bot API (3998), an RSS feed (3997) and an IMAP server
 (9143) so every outbound call is a real network round trip that the test can inspect. The production

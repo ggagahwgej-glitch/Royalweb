@@ -8,6 +8,21 @@ export async function register() {
   try {
     const { ensureBootstrap } = await import('./lib/bootstrap');
     ensureBootstrap();
+
+    // Serverless functions are created and frozen per request: a setInterval
+    // there would either never fire or fire unpredictably. On those hosts the
+    // same work is triggered by a cron request to /api/worker/tick and
+    // /api/alerts/check.
+    const { isServerless, runtimeReport } = await import('./lib/runtime');
+    if (isServerless()) {
+      const report = runtimeReport();
+      console.log(
+        `[runtime] serverless (${report.platform}) · storage=${report.storage} · worker=cron · data=${report.dataDir}`
+      );
+      for (const warning of report.warnings) console.warn(`[runtime] ${warning}`);
+      return;
+    }
+
     const { startWorker } = await import('./lib/publishing/worker');
     startWorker();
     // A supervisor that does not depend on the worker loop: it alerts when the
