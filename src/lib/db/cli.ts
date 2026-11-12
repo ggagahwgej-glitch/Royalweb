@@ -2,13 +2,37 @@
  * Standalone database CLI (bundled by scripts/db.mjs).
  * Deliberately free of `server-only` / Next imports so it can run in plain Node.
  */
-import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { migrations } from './migrations';
+import { dataDir, dataDirIssue } from '../runtime';
 
-const DATA_DIR = process.env.ROYALWEB_DATA_DIR || path.join(process.cwd(), 'data');
+type DatabaseSync = import('node:sqlite').DatabaseSync;
+
+/** Same lazy resolution as the app: an unsupported Node gets a clear message. */
+function loadSqlite(): typeof import('node:sqlite') {
+  const getBuiltin = (process as unknown as { getBuiltinModule?: (name: string) => unknown }).getBuiltinModule;
+  try {
+    const mod =
+      (typeof getBuiltin === 'function' ? (getBuiltin.call(process, 'node:sqlite') as typeof import('node:sqlite')) : undefined) ??
+      (createRequire(path.join(process.cwd(), 'royalweb-sqlite-loader.cjs'))('node:sqlite') as typeof import('node:sqlite'));
+    if (!mod?.DatabaseSync) throw new Error('node:sqlite present but DatabaseSync missing');
+    return mod;
+  } catch (err) {
+    console.error(
+      `✗ node:sqlite is unavailable in this Node.js runtime (${process.version}): ${err instanceof Error ? err.message : String(err)}\n` +
+        '  Node.js 22.13 or newer is required (node:sqlite is only unflagged from 22.13).'
+    );
+    process.exit(1);
+  }
+}
+
+const { DatabaseSync } = loadSqlite();
+const DATA_DIR = dataDir();
 const DB_PATH = process.env.ROYALWEB_DB_PATH || path.join(DATA_DIR, 'royalweb.db');
+
+if (dataDirIssue()) console.warn(`! ${dataDirIssue()}`);
 
 function applyMigrations(db: DatabaseSync) {
   const applied = new Set<number>();

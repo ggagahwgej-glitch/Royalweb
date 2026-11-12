@@ -25,7 +25,8 @@ TEST_EMAIL=admin@royalweb.local TEST_PASSWORD='Royalweb-Acceptance-2026' npm run
 Without the four `ROYALWEB_*` lines the five onboarding checks (T31a–T35) are reported as
 **skipped**, not as passed.
 
-**Result: 54 passed · 0 failed · 1 skipped · 55 checks.**
+**Result: 71 passed · 0 failed · 1 skipped · 72 checks** (54-check baseline at the time of writing; T49–T52 and
+the extra workspace/quick-connect checks were added later — see the addendum at the end).
 
 Raw output (reproducible with `npm run acceptance`):
 
@@ -205,6 +206,8 @@ compliance guard and suppression list — runs against the real application and 
 | T48 | Pausing keeps the original slot, restores attempts and resumes publishing | pass — job released as `scheduled` with `scheduled_at` untouched, `attempts` back to 0 after two paused ticks, publishes after the pause is lifted |
 | T49 | Health reports how the deployment is put together | pass — `runtime.platform=node`, `storage=persistent`, `worker=in-process`, warnings array present |
 | T50 | Cron endpoints refuse anonymous calls | pass — `GET /api/worker/tick` and `/api/alerts/check` return 401 without a session/secret and 200 with one |
+| T51 | Deep health probe verifies Node, storage, database, migrations and encryption | pass — `checks[]` contains `node:sqlite`, `storage`, `database`, `migrations`, `encryption`, all `ok: true`, key source `file` |
+| T52 | Doctor preflight passes in this environment | pass — `node scripts/doctor.mjs --json` reports `ok: true` with a writable data dir and a usable master key |
 
 The suite now starts local doubles for the Telegram Bot API (3998), an RSS feed (3997) and an IMAP server
 (9143) so every outbound call is a real network round trip that the test can inspect. The production
@@ -214,6 +217,7 @@ throttles are cleared at suite start (and again before the warm-up test) rather 
 
 ```bash
 npm install
+npm run doctor              # Node floor, writable data dir, master key, migrations
 npm run db:reset            # optional: start from an empty database
 npm run build && npm start  # or npm run dev
 TEST_EMAIL=you@example.com TEST_PASSWORD='…' npm run acceptance
@@ -222,3 +226,28 @@ TEST_EMAIL=you@example.com TEST_PASSWORD='…' npm run acceptance
 The suite creates its own campaigns (prefixed `Acceptance`), a mock-verified WordPress account and a
 Behance profile account, and injects one interrupted job into SQLite for the recovery test. Delete them from
 the dashboard afterwards if you ran it against production.
+
+---
+
+## Addendum — deployment hardening (production "server-side exception", 2026-11-12)
+
+A Vercel deployment answered the root URL with *"Application error: a server-side exception has occurred"*
+and only an opaque digest. The failure was reproducible locally by making the data directory unusable
+(`ROYALWEB_DATA_DIR=/var/task/data` on a read-only bundle): every route — including `/api/health` — returned
+HTTP 500 with `EACCES: permission denied, mkdir '/var/task/data'`, and the browser showed the same generic page.
+
+Fixed at the root, then verified in three environments:
+
+| Scenario | Command | Result |
+| --- | --- | --- |
+| Disk host (production shape) | `npm start` | `/` → 307 `/login`, `/api/health?deep=1` → `ok`, `storage=persistent`, all checks pass; full acceptance suite **71 passed · 0 failed · 1 skipped · 72 checks** |
+| Serverless, healthy | `VERCEL=1 CRON_SECRET=… npm start` | `/` → 307 `/login?setup=1`, setup → 200, all 18 dashboard pages → 200, `dataDir=/tmp/royalweb`, all deep checks pass |
+| Serverless, unusable data dir | `VERCEL=1 ROYALWEB_DATA_DIR=/var/task/data npm start` | `/` renders the startup-diagnosis page (HTTP 200) naming the exact path and error; `/api/health?deep=1` returns JSON with `status: "failed"`, `dataDirIssue` and the fallback to `/tmp/royalweb` |
+| Runtime without `node:sqlite` | `NODE_OPTIONS=--require no-sqlite.cjs` | `/` renders "This runtime does not provide node:sqlite (Node vX) … needs Node 22.13.0 or newer"; health returns JSON 503 instead of an HTML error page |
+
+What changed: `src/lib/runtime.ts` resolves (and probes) a writable data directory instead of trusting
+`ROYALWEB_DATA_DIR` blindly; `src/lib/crypto.ts` uses that directory and accepts `ROYALWEB_MASTER_KEY` as an
+alias while falling back to an in-memory key on an ephemeral host; `src/lib/db/index.ts` resolves `node:sqlite`
+lazily and reports the Node floor; `app/error.tsx`, `app/global-error.tsx` and `components/StartupFailure.tsx`
+replace the digest-only page with the actual cause; `/api/health?deep=1` and `npm run doctor` expose the same
+checks without a session.

@@ -13,7 +13,8 @@
     "db:reset": "node scripts/db.mjs reset",
     "worker": "node scripts/worker.mjs",
     "acceptance": "node scripts/acceptance.mjs",
-    "db:restore": "node scripts/restore.mjs"
+    "db:restore": "node scripts/restore.mjs",
+    "doctor": "node scripts/doctor.mjs"
   },
   "dependencies": {
     "@types/nodemailer": "^8.0.2",
