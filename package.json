@@ -2,7 +2,7 @@
   "name": "royalweb-autopilot",
   "version": "1.0.0",
   "private": true,
-  "description": "ROYALWEB AUTOPILOT — AI-powered multi-platform social media publishing, marketing distribution & content automation system.",
+  "description": "ROYALWEB AUTOPILOT \u2014 AI-powered multi-platform social media publishing, marketing distribution & content automation system.",
   "scripts": {
     "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
@@ -12,7 +12,8 @@
     "db:migrate": "node scripts/db.mjs migrate",
     "db:reset": "node scripts/db.mjs reset",
     "worker": "node scripts/worker.mjs",
-    "acceptance": "node scripts/acceptance.mjs"
+    "acceptance": "node scripts/acceptance.mjs",
+    "db:restore": "node scripts/restore.mjs"
   },
   "dependencies": {
     "@types/nodemailer": "^8.0.2",

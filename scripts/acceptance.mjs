@@ -16,11 +16,19 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import sharp from 'sharp';
 import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const BASE = (process.env.TEST_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
 const DB_PATH = process.env.TEST_DB_PATH || 'data/royalweb.db';
 const MOCK_PORT = Number(process.env.TEST_MOCK_PORT || 3999);
 const SMTP_PORT = Number(process.env.TEST_SMTP_PORT || 2525);
+const TELEGRAM_PORT = Number(process.env.TEST_TELEGRAM_PORT || 3998);
+const RSS_PORT = Number(process.env.TEST_RSS_PORT || 3997);
+const IMAP_PORT = Number(process.env.TEST_IMAP_PORT || 9143);
 const EMAIL = process.env.TEST_EMAIL || 'acceptance@royalweb.local';
 const PASSWORD = process.env.TEST_PASSWORD || 'Acceptance-Test-Pass-2026';
 
@@ -262,12 +270,125 @@ function sha(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
+// ─────────────────────────────────────────────────---- mock Telegram API
+
+const telegram = { messages: [] };
+
+function startTelegram() {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        let parsed = {};
+        try {
+          parsed = JSON.parse(body || '{}');
+        } catch {
+          parsed = {};
+        }
+        const match = /^\/bot([^/]+)\/sendMessage$/.exec(req.url ?? '');
+        if (!match) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, description: 'Not Found' }));
+          return;
+        }
+        telegram.messages.push({ token: match[1], chat_id: parsed.chat_id, text: parsed.text });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, result: { message_id: telegram.messages.length } }));
+      });
+    });
+    server.listen(TELEGRAM_PORT, '127.0.0.1', () => resolve(server));
+  });
+}
+
+// ─────────────────────────────────────────────────---- mock RSS endpoint
+
+async function startRss() {
+  const poster = await sharp({ create: { width: 900, height: 600, channels: 3, background: { r: 24, g: 32, b: 48 } } })
+    .jpeg({ quality: 82 })
+    .toBuffer();
+  const server = http.createServer((req, res) => {
+    if ((req.url ?? '').startsWith('/cover.jpg')) {
+      res.writeHead(200, { 'content-type': 'image/jpeg' });
+      res.end(poster);
+      return;
+    }
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>Acceptance Blog</title>
+  <item>
+    <title>Why a slow restaurant website loses table bookings</title>
+    <link>http://127.0.0.1:${RSS_PORT}/article/slow-sites</link>
+    <guid>acceptance-item-${Date.now()}</guid>
+    <description><![CDATA[<p>Mobile speed is the difference between a booking and a bounce.</p><img src="http://127.0.0.1:${RSS_PORT}/cover.jpg" />]]></description>
+    <pubDate>${new Date().toUTCString()}</pubDate>
+    <enclosure url="http://127.0.0.1:${RSS_PORT}/cover.jpg" type="image/jpeg" length="1024" />
+  </item>
+</channel></rss>`;
+    res.writeHead(200, { 'content-type': 'application/rss+xml' });
+    res.end(xml);
+  });
+  return new Promise((resolve) => server.listen(RSS_PORT, '127.0.0.1', () => resolve(server)));
+}
+
+// ─────────────────────────────────────────────────---- mock IMAP server
+
+function startImap() {
+  const header = [
+    'From: Ravi Sharma <ravi.restaurant@example.test>',
+    'Subject: Re: A quick observation about your site',
+    `Date: ${new Date().toUTCString()}`,
+    'Message-ID: <reply-1@example.test>',
+  ].join('\r\n');
+  const body = 'Yes please, send the details. Call me on the shop number any afternoon.';
+  return new Promise((resolve) => {
+    const server = net.createServer((socket) => {
+      socket.setEncoding('utf8');
+      socket.write('* OK IMAP4rev1 test double ready\r\n');
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk;
+        let index;
+        while ((index = buffer.indexOf('\r\n')) !== -1) {
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+          const tag = line.split(' ')[0];
+          const upper = line.split(' ').slice(1).join(' ').toUpperCase();
+          if (upper.startsWith('LOGIN')) socket.write(`${tag} OK LOGIN completed\r\n`);
+          else if (upper.startsWith('SELECT')) {
+            socket.write('* 1 EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n');
+            socket.write(`${tag} OK [READ-WRITE] SELECT completed\r\n`);
+          } else if (upper.startsWith('UID SEARCH')) {
+            socket.write('* SEARCH 42\r\n');
+            socket.write(`${tag} OK UID SEARCH completed\r\n`);
+          } else if (upper.startsWith('UID FETCH')) {
+            socket.write(`* 1 FETCH (UID 42 BODY[HEADER] {${Buffer.byteLength(header)}}\r\n${header})\r\n`);
+            socket.write(` BODY[TEXT]<0> {${Buffer.byteLength(body)}}\r\n${body})\r\n`);
+            socket.write(`${tag} OK UID FETCH completed\r\n`);
+          } else if (upper.startsWith('LOGOUT')) {
+            socket.write('* BYE logging out\r\n');
+            socket.write(`${tag} OK LOGOUT completed\r\n`);
+            socket.end();
+          } else {
+            socket.write(`${tag} OK completed\r\n`);
+          }
+        }
+      });
+      socket.on('error', () => undefined);
+    });
+    server.listen(IMAP_PORT, '127.0.0.1', () => resolve(server));
+  });
+}
+
 // ─────────────────────────────────────────────────────────── main
 
 async function main() {
   console.log(`\nROYALWEB AUTOPILOT — acceptance suite against ${BASE}\n`);
   const mockServer = await startMock();
   const smtpServer = await startSmtp();
+  const telegramServer = await startTelegram();
+  const rssServer = await startRss();
+  const imapServer = await startImap();
   console.log(`· mock WordPress API on 127.0.0.1:${MOCK_PORT} · mock SMTP on 127.0.0.1:${SMTP_PORT} (test doubles)\n`);
 
   try {
@@ -285,6 +406,10 @@ async function main() {
       if (setup.status !== 200) throw new Error(`Setup failed: ${setup.text}`);
       record('T1c', 'First-run administrator created', 'pass', EMAIL);
     } else {
+      // Repeated suite runs must not trip the production login/send throttles.
+      const dbRate = new DatabaseSync(DB_PATH);
+      dbRate.prepare('DELETE FROM rate_limits').run();
+      dbRate.close();
       const login = await req('/api/auth/login', { method: 'POST', body: { email: EMAIL, password: PASSWORD } });
       if (login.status !== 200) {
         record('T1c', 'Admin login', 'fail', `${login.status}: ${login.json?.error}. Provide TEST_EMAIL/TEST_PASSWORD.`);
@@ -886,6 +1011,234 @@ async function main() {
       );
     }
 
+    // TEST 36–44 — alerts, snapshots, RSS, recycling, warm-up, IMAP, workspaces
+    await req('/api/alerts', {
+      method: 'POST',
+      body: { telegramBotToken: 'mock:token', telegramChatId: '-100999', email: '', webhookUrl: '' },
+    });
+    const testAlert = unwrap(await req('/api/alerts', { method: 'PUT', body: { test: true } }));
+    const tgChannel = testAlert.result.channels.find((c) => c.channel === 'telegram');
+    record(
+      'T36',
+      'Alert channels are real: a test alert reaches the Telegram API',
+      tgChannel?.ok === true && telegram.messages.some((m) => m.chat_id === '-100999' && /Test alert/.test(m.text ?? ''))
+        ? 'pass'
+        : 'fail',
+      `${telegram.messages.length} message(s) captured · ${tgChannel?.detail ?? 'no telegram channel'}`
+    );
+
+    // Worker death: age the heartbeat, then run the supervisor for real.
+    const dbAlert = new DatabaseSync(DB_PATH);
+    const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+    dbAlert.prepare('UPDATE worker_heartbeats SET started_at = ?, finished_at = ?').run(stale, stale);
+    dbAlert.close();
+    const monitor = unwrap(await req('/api/alerts/check', { method: 'POST', body: {} }));
+    const alertsNow = unwrap(await req('/api/alerts'));
+    record(
+      'T37',
+      'A dead worker raises a real external alert',
+      monitor.result.workerAlive === false && alertsNow.events.some((e) => e.code === 'worker_dead' && e.delivered)
+        ? 'pass'
+        : 'fail',
+      `${monitor.result.secondsSinceHeartbeat}s since heartbeat · delivered=${alertsNow.events.some((e) => e.code === 'worker_dead' && e.delivered)}`
+    );
+
+    // Retries exhausted: keep the job unblocked so the worker really burns its
+    // whole attempt budget against a failing endpoint.
+    const retryAccount = unwrap(
+      await req('/api/accounts', {
+        method: 'POST',
+        body: {
+          platformId: 'wordpress',
+          accountName: 'Mock WordPress Retry',
+          credentials: { siteUrl: `http://127.0.0.1:${MOCK_PORT}`, username: 'acceptance', appPassword: 'app-pass' },
+        },
+      })
+    );
+    mock.mode = 'fail500';
+    const retryCampaign = await createCampaign(`Acceptance retries ${Date.now()}`, [mediaId]);
+    await generate(retryCampaign.campaign.id, ['wordpress']);
+    await approveAll(retryCampaign.campaign.id);
+    const retrySchedule = await schedule(retryCampaign.campaign.id, {
+      platforms: ['wordpress'],
+      publishNow: true,
+      timezone: 'Asia/Kolkata',
+      recurrence: 'none',
+      requireApproved: true,
+    });
+    const retryJob = retrySchedule.jobs.find((j) => j.platformId === 'wordpress');
+    const dbRetry = new DatabaseSync(DB_PATH);
+    dbRetry.prepare('UPDATE publishing_jobs SET max_attempts = 1 WHERE id = ?').run(retryJob.id);
+    let retryAlert = false;
+    for (let attempt = 0; attempt < 5 && !retryAlert; attempt += 1) {
+      const past = new Date(Date.now() - 60_000).toISOString();
+      dbRetry
+        .prepare('UPDATE publishing_jobs SET next_attempt_at = ?, scheduled_at = ? WHERE id = ?')
+        .run(past, past, retryJob.id);
+      await req('/api/worker/tick', { method: 'POST', body: {} });
+      retryAlert = unwrap(await req('/api/alerts')).events.some((e) => e.code === 'retries_exhausted');
+    }
+    dbRetry.close();
+    mock.mode = 'ok';
+    record(
+      'T38',
+      'A retry sequence that runs out raises an alert',
+      retryAlert && retryAccount.account?.status === 'connected' ? 'pass' : 'fail',
+      `${retryAccount.account?.status ?? 'no account'} · ${retryAlert ? 'retries_exhausted recorded' : 'no alert recorded'}`
+    );
+
+    // Snapshots: create, download, restore offline with the CLI.
+    const snapPass = 'acceptance-snapshot-passphrase';
+    await req('/api/snapshots', { method: 'POST', body: { action: 'config', passphrase: snapPass, schedule: 'daily' } });
+    const snapshot = unwrap(await req('/api/snapshots', { method: 'POST', body: { action: 'create' } }));
+    const snapshotList = unwrap(await req('/api/snapshots'));
+    const download = await req(`/api/snapshots/${snapshot.result.id}`, { raw: true });
+    const snapshotText = await download.text();
+    const sealedSnapshot = snapshotText.includes('"format":"royalweb-snapshot"') && !snapshotText.includes('SQLite format');
+    const restorePath = `${DB_PATH}.acceptance.rwbak`;
+    fs.writeFileSync(restorePath, snapshotText);
+    let restoredOk = false;
+    try {
+      execFileSync('node', ['scripts/restore.mjs', restorePath], {
+        env: { ...process.env, ROYALWEB_SNAPSHOT_PASSPHRASE: snapPass },
+        stdio: 'pipe',
+      });
+      restoredOk = fs.readFileSync(`${DB_PATH}.restored`).subarray(0, 15).toString() === 'SQLite format 3';
+    } finally {
+      for (const f of [restorePath, `${DB_PATH}.restored`]) fs.rmSync(f, { force: true });
+    }
+    record(
+      'T39',
+      'Full-database snapshot is encrypted and restores offline',
+      sealedSnapshot && restoredOk && snapshotList.snapshots.length > 0 ? 'pass' : 'fail',
+      `${(snapshotText.length / 1024).toFixed(0)} KB · sealed=${sealedSnapshot} · restored=${restoredOk}`
+    );
+
+    // RSS ingestion into drafted campaigns.
+    const feedAdd = unwrap(
+      await req('/api/rss', { method: 'POST', body: { action: 'add', url: `http://127.0.0.1:${RSS_PORT}/feed.xml` } })
+    );
+    const feedId = feedAdd.feeds?.[0]?.id;
+    const ingestRes = unwrap(await req('/api/rss', { method: 'POST', body: { action: 'ingest', feedId } }));
+    const rssItems = unwrap(await req('/api/rss')).items;
+    const draftedItem = rssItems.find((i) => i.campaignId);
+    const rssCampaign = draftedItem ? unwrap(await req(`/api/campaigns/${draftedItem.campaignId}`)) : null;
+    record(
+      'T40',
+      'A feed article becomes a campaign with 25 drafts held for approval',
+      rssCampaign && rssCampaign.contents.length === 25 && rssCampaign.contents.every((c) => c.status === 'draft')
+        ? 'pass'
+        : 'fail',
+      rssCampaign
+        ? `${rssCampaign.contents.length} drafts · all draft=${rssCampaign.contents.every((c) => c.status === 'draft')}`
+        : `ingest drafted=${ingestRes.ingest?.drafted ?? 0}`
+    );
+
+    // Evergreen recycling.
+    let recycle = null;
+    if (rssCampaign) {
+      await req(`/api/campaigns/${rssCampaign.campaign.id}/recycle`, { method: 'POST', body: { windowDays: 60 } });
+      const out = unwrap(await req(`/api/campaigns/${rssCampaign.campaign.id}/recycle`, { method: 'POST', body: { recycleNow: true } }));
+      const clone = unwrap(await req(`/api/campaigns/${out.result.campaignId}`));
+      const platformId = rssCampaign.contents[0]?.platformId;
+      const before = rssCampaign.contents.find((c) => c.platformId === platformId)?.caption ?? '';
+      const after = clone.contents.find((c) => c.platformId === platformId)?.caption ?? '';
+      recycle = {
+        contents: out.result.contents,
+        mode: out.result.mode,
+        changed: after !== before,
+        draftOnly: clone.contents.every((c) => c.status === 'draft'),
+      };
+    }
+    record(
+      'T41',
+      'Evergreen recycling re-queues a varied copy as a draft only',
+      recycle && recycle.contents > 0 && recycle.changed && recycle.draftOnly ? 'pass' : 'fail',
+      recycle ? `${recycle.contents} drafts · varied=${recycle.changed} · mode=${recycle.mode}` : 'no source campaign'
+    );
+
+    // Warm-up daily limit. Earlier email tests already used the per-minute
+    // send budget, so clear it rather than weakening the production limit.
+    {
+      const dbRate = new DatabaseSync(DB_PATH);
+      dbRate.prepare("DELETE FROM rate_limits WHERE key LIKE 'email-send:%'").run();
+      dbRate.prepare('DELETE FROM email_send_daily').run();
+      dbRate.close();
+    }
+    await req('/api/email/warmup', { method: 'POST', body: { rampEnabled: true, rampStart: 2, rampIncrement: 0, rampMax: 2 } });
+    const sentStatuses = [];
+    for (let n = 0; n < 2; n += 1) {
+      const sent = await req('/api/email/send', {
+        method: 'POST',
+        body: {
+          to: `warm-${n}-${Date.now()}@example.test`,
+          subject: 'Warm-up check',
+          body: `${draft.body}\n\nReply stop to opt out.`,
+          template: 'intro',
+        },
+      });
+      sentStatuses.push(sent.status);
+    }
+    const blockedWarm = await req('/api/email/send', {
+      method: 'POST',
+      body: {
+        to: `warm-blocked-${Date.now()}@example.test`,
+        subject: 'Warm-up check',
+        body: `${draft.body}\n\nReply stop to opt out.`,
+        template: 'intro',
+      },
+    });
+    record(
+      'T42',
+      'Warm-up caps the daily sends and refuses the next one',
+      blockedWarm.status === 429 && blockedWarm.json?.code === 'daily_limit' ? 'pass' : 'fail',
+      `sent=${sentStatuses.join(',')} · blocked=HTTP ${blockedWarm.status} ${blockedWarm.json?.code ?? ''}`
+    );
+
+    // IMAP reply detection pauses follow-ups.
+    await req('/api/email/imap', {
+      method: 'POST',
+      body: { action: 'configure', enabled: true, host: '127.0.0.1', port: IMAP_PORT, user: 'outreach@royalweb.test', pass: 'app-password' },
+    });
+    const polled = unwrap(await req('/api/email/imap', { method: 'POST', body: { action: 'poll' } }));
+    await req('/api/email/warmup', { method: 'POST', body: { rampEnabled: false, rampMax: 50 } });
+    const followUp = await req('/api/email/send', {
+      method: 'POST',
+      body: {
+        to: 'ravi.restaurant@example.test',
+        subject: 'Following up once',
+        body: `${draft.body}\n\nReply stop to opt out.`,
+        template: 'follow_up',
+      },
+    });
+    const replyList = unwrap(await req('/api/email/imap')).replies;
+    const sawReply = replyList.some((r) => r.from.includes('ravi.restaurant@example.test'));
+    record(
+      'T43',
+      'IMAP reply detection pauses the follow-up sequence',
+      polled.result.ok === true && sawReply && followUp.status === 409 && followUp.json?.code === 'reply_paused'
+        ? 'pass'
+        : 'fail',
+      `${polled.result.newReplies} new · ${replyList.length} stored · follow-up HTTP ${followUp.status} ${followUp.json?.code ?? ''}`
+    );
+
+    // Workspaces isolate accounts, campaigns and the sender identity.
+    const spacesBefore = unwrap(await req('/api/workspaces'));
+    const createdSpace = unwrap(await req('/api/workspaces', { method: 'POST', body: { name: 'Acceptance Client B' } }));
+    await req('/api/workspaces', { method: 'PATCH', body: { activeId: createdSpace.workspace.id } });
+    const switchedState = unwrap(await req('/api/workspaces'));
+    const scopedCamps = unwrap(await req('/api/campaigns')).campaigns;
+    const scopedAccounts = unwrap(await req('/api/accounts')).accounts;
+    const isolated = scopedCamps.length === 0 && scopedAccounts.length === 0;
+    await req('/api/workspaces', { method: 'PATCH', body: { activeId: spacesBefore.activeId } });
+    const restoredView = unwrap(await req('/api/campaigns')).campaigns.some((c) => c.id === campaign.campaign.id);
+    record(
+      'T44',
+      'Workspaces isolate accounts, campaigns and sender identity',
+      switchedState.activeId === createdSpace.workspace.id && isolated && restoredView ? 'pass' : 'fail',
+      `switched=${switchedState.activeId === createdSpace.workspace.id} · isolated=${isolated} (${scopedCamps.length} campaigns, ${scopedAccounts.length} accounts) · switched back=${restoredView}`
+    );
+
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');
     record('X1', 'Private contact details excluded from generated content', contactHidden ? 'pass' : 'fail');
@@ -920,6 +1273,9 @@ async function main() {
   } finally {
     mockServer.close();
     smtpServer.close();
+    telegramServer.close();
+    rssServer.close();
+    imapServer.close();
   }
 
   console.log('\n──────────────────────────────────────────────────────────────');

@@ -18,7 +18,7 @@ const schema = z.object({
 export const POST = handler(async (req, _ctx, auth) => {
   enforceRateLimit(`email-send:${auth.user.id}`, 20, 600);
   const body = await parseBody(req, schema);
-  const config = readEmailConfig();
+  const config = readEmailConfig(auth.workspaceId);
 
   if (!config.configured) {
     throw new ApiError(
@@ -47,12 +47,17 @@ export const POST = handler(async (req, _ctx, auth) => {
 
   const result = await sendEmail({
     userId: auth.user.id,
+    workspaceId: auth.workspaceId,
     to: body.to,
     subject: body.subject,
     body: body.body,
     template: body.template,
     campaignId: body.campaignId ?? null,
   });
+
+  // Warm-up and reply guards are real HTTP statuses, not silent no-ops.
+  if (result.status === 'daily_limit') { audit('email.blocked', 'email_message', body.to, auth.user.id, { reason: 'daily_limit' }); throw new ApiError(429, result.message, 'daily_limit'); }
+  if (result.status === 'reply_paused') { audit('email.blocked', 'email_message', body.to, auth.user.id, { reason: 'reply_paused' }); throw new ApiError(409, result.message, 'reply_paused'); }
 
   await audit('email.sent', 'email_message', body.to, auth.user.id, {
     status: result.status,

@@ -1,5 +1,6 @@
 import 'server-only';
 import { getSecret, secretStatus } from '@/lib/secrets';
+import { readWarmup } from './warmup';
 
 /**
  * Outbound email configuration.
@@ -38,7 +39,44 @@ const KEYS = [
   'email.unsubscribeUrl',
 ] as const;
 
-export function readEmailConfig(): EmailConfig {
+function withMissing(base: Omit<EmailConfig, 'configured' | 'missing' | 'secure'>): EmailConfig {
+  const missing: string[] = [];
+  if (!base.host) missing.push('SMTP host');
+  if (!base.port) missing.push('SMTP port');
+  if (!base.fromAddress) missing.push('From address');
+  if (!base.user) missing.push('SMTP username');
+  if (!base.hasPassword) missing.push('SMTP password');
+  return {
+    ...base,
+    configured: missing.length === 0,
+    secure: base.port === 465,
+    missing,
+  };
+}
+
+/**
+ * The sender identity belongs to the *workspace*, so an agency can send as each
+ * client from that client's own domain. When the workspace has no SMTP of its
+ * own we fall back to the installation-level configuration (env or dashboard),
+ * which is what a single-brand install keeps using.
+ */
+export function readEmailConfig(workspaceId?: string): EmailConfig {
+  if (workspaceId) {
+    const workspace = readWarmup(workspaceId).smtp;
+    if (workspace.host) {
+      return withMissing({
+        host: workspace.host,
+        port: workspace.port,
+        user: workspace.user,
+        hasPassword: workspace.hasPassword,
+        fromAddress: workspace.fromAddress,
+        fromName: workspace.fromName,
+        replyTo: workspace.replyTo,
+        postalAddress: workspace.postalAddress,
+        unsubscribeUrl: workspace.unsubscribeUrl,
+      });
+    }
+  }
   const host = getSecret('email.smtpHost') ?? '';
   const port = Number(getSecret('email.smtpPort') ?? 0) || 0;
   const user = getSecret('email.smtpUser') ?? '';

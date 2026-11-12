@@ -10,6 +10,10 @@ export async function register() {
     ensureBootstrap();
     const { startWorker } = await import('./lib/publishing/worker');
     startWorker();
+    // A supervisor that does not depend on the worker loop: it alerts when the
+    // worker dies, runs scheduled snapshots, polls feeds and recycles campaigns.
+    const { startMonitor } = await import('./lib/monitor');
+    startMonitor();
   } catch (err) {
     console.error('[instrumentation] startup failed', err);
   }

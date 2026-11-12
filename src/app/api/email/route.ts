@@ -7,7 +7,7 @@ import { TEMPLATE_META } from '@/lib/email/templates';
 export const dynamic = 'force-dynamic';
 
 export const GET = handler(async (_req, _ctx, auth) => {
-  const config = readEmailConfig();
+  const config = readEmailConfig(auth.workspaceId);
   const suppressions = Number(
     get<{ c: number }>('SELECT COUNT(*) AS c FROM email_suppressions')?.c ?? 0
   );

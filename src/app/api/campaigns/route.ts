@@ -20,9 +20,13 @@ export const GET = handler(async (req, _ctx, auth) => {
        (SELECT COUNT(*) FROM publishing_jobs j WHERE j.campaign_id = c.id AND j.status = 'published') AS published_count,
        (SELECT COUNT(*) FROM generated_contents gc WHERE gc.campaign_id = c.id) AS content_count,
        (SELECT COUNT(*) FROM generated_contents gc WHERE gc.campaign_id = c.id AND gc.status = 'approved') AS approved_count
-     FROM campaigns c WHERE c.user_id = ? ${status ? 'AND c.status = ?' : ''}
+     FROM campaigns c
+     WHERE c.user_id = ? ${status ? 'AND c.status = ?' : ''}
+       AND (c.workspace_id = ? OR (c.workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))
      ORDER BY c.created_at DESC LIMIT 100`,
-    ...(status ? [auth.user.id, status] : [auth.user.id])
+    ...(status
+      ? [auth.user.id, status, auth.workspaceId, auth.workspaceId, auth.user.id]
+      : [auth.user.id, auth.workspaceId, auth.workspaceId, auth.user.id])
   );
   return jsonOk({ campaigns: rows.map((r) => campaignOut(r)) });
 });
@@ -37,8 +41,8 @@ export const POST = handler(async (req, _ctx, auth) => {
     run(
       `INSERT INTO campaigns (id, user_id, name, business_category, service_name, offer_price, website_url,
         whatsapp_url, contact_info, description, target_audience, language, cta, status, timezone, recurrence,
-        created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+        workspace_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`,
       id,
       auth.user.id,
       body.name,
@@ -54,6 +58,7 @@ export const POST = handler(async (req, _ctx, auth) => {
       body.cta,
       body.timezone,
       body.recurrence,
+      auth.workspaceId,
       ts,
       ts
     );

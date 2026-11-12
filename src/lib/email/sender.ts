@@ -3,6 +3,8 @@ import nodemailer, { type Transporter } from 'nodemailer';
 import { all, get, newId, nowIso, run } from '@/lib/db';
 import { getSecret } from '@/lib/secrets';
 import { readEmailConfig } from './config';
+import { readEmailPassword, releaseSendSlot, reserveSendSlot } from './warmup';
+import { hasReplyFrom } from './imap';
 import { toHtml } from './templates';
 
 /**
@@ -15,6 +17,8 @@ import { toHtml } from './templates';
 
 export interface SendInput {
   userId: string;
+  /** When set, the workspace's own sender identity and warm-up limit apply. */
+  workspaceId?: string;
   to: string;
   subject: string;
   body: string;
@@ -25,7 +29,14 @@ export interface SendInput {
 
 export interface SendResult {
   ok: boolean;
-  status: 'sent' | 'failed' | 'suppressed' | 'not_configured' | 'invalid_recipient';
+  status:
+    | 'sent'
+    | 'failed'
+    | 'suppressed'
+    | 'not_configured'
+    | 'invalid_recipient'
+    | 'daily_limit'
+    | 'reply_paused';
   message: string;
   messageId?: string;
   accepted?: string[];
@@ -80,14 +91,15 @@ function classify(err: unknown): { code: string; message: string } {
   return { code, message: `${map[code] ?? 'SMTP error' } ${raw.slice(0, 300)}`.trim() };
 }
 
-function transport() {
-  const config = readEmailConfig();
+function transport(workspaceId?: string) {
+  const config = readEmailConfig(workspaceId);
   if (!config.configured) return { config, transporter: null as null | Transporter };
+  const password = (workspaceId ? readEmailPassword(workspaceId) : undefined) ?? getSecret('email.smtpPass') ?? '';
   const transporter = nodemailer.createTransport({
     host: config.host,
     port: config.port,
     secure: config.secure,
-    auth: { user: config.user, pass: getSecret('email.smtpPass') ?? '' },
+    auth: { user: config.user, pass: password },
     tls: { minVersion: 'TLSv1.2' },
     connectionTimeout: 20_000,
     greetingTimeout: 15_000,
@@ -97,8 +109,8 @@ function transport() {
 }
 
 /** Live SMTP handshake + auth check. Never returns credentials. */
-export async function verifyEmailConfig(): Promise<{ ok: boolean; message: string; code?: string }> {
-  const { config, transporter } = transport();
+export async function verifyEmailConfig(workspaceId?: string): Promise<{ ok: boolean; message: string; code?: string }> {
+  const { config, transporter } = transport(workspaceId);
   if (!config.configured || !transporter) {
     return { ok: false, message: `Email is not configured yet: ${config.missing.join(', ')}.` , code: 'not_configured' };
   }
@@ -123,10 +135,11 @@ export async function sendEmail(input: SendInput): Promise<SendResult> {
   if (suppression.suppressed) {
     const message = `${to} is on the opt-out list (${suppression.reason}). Sending is blocked permanently.`;
     run(
-      `INSERT INTO email_messages (id, user_id, campaign_id, to_address, subject, body, template, status, error, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'suppressed', ?, ?)`,
+      `INSERT INTO email_messages (id, user_id, workspace_id, campaign_id, to_address, subject, body, template, status, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'suppressed', ?, ?)`,
       newId(),
       input.userId,
+      input.workspaceId ?? null,
       input.campaignId ?? null,
       to,
       input.subject.slice(0, 300),
@@ -138,8 +151,44 @@ export async function sendEmail(input: SendInput): Promise<SendResult> {
     return { ok: false, status: 'suppressed', message };
   }
 
-  const { config, transporter } = transport();
+  // Reply detection: never keep pushing a follow-up at someone who answered.
+  if (input.workspaceId && (input.template ?? 'custom') === 'follow_up' && hasReplyFrom(input.workspaceId, to)) {
+    const message = `${to} has replied to this sequence. Follow-ups are paused automatically — answer them instead.`;
+    run(
+      `INSERT INTO email_messages (id, user_id, workspace_id, campaign_id, to_address, subject, body, template, status, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?)`,
+      newId(),
+      input.userId,
+      input.workspaceId,
+      input.campaignId ?? null,
+      to,
+      input.subject.slice(0, 300),
+      input.body,
+      input.template ?? 'custom',
+      message,
+      nowIso()
+    );
+    return { ok: false, status: 'reply_paused', message };
+  }
+
+  // Warm-up: the daily limit is enforced here, before any SMTP work, and a slot
+  // is only kept when the send is actually attempted.
+  let reserved = false;
+  if (input.workspaceId) {
+    const slot = reserveSendSlot(input.workspaceId);
+    if (!slot.allowed) {
+      return {
+        ok: false,
+        status: 'daily_limit',
+        message: `Daily sending limit reached (${slot.sent}/${slot.limit}) for this workspace. The warm-up schedule raises it automatically tomorrow, or adjust it in Settings → Email.`,
+      };
+    }
+    reserved = true;
+  }
+
+  const { config, transporter } = transport(input.workspaceId);
   if (!config.configured || !transporter) {
+    if (reserved && input.workspaceId) releaseSendSlot(input.workspaceId);
     return {
       ok: false,
       status: 'not_configured',
@@ -149,10 +198,11 @@ export async function sendEmail(input: SendInput): Promise<SendResult> {
 
   const id = newId();
   run(
-    `INSERT INTO email_messages (id, user_id, campaign_id, to_address, subject, body, template, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+    `INSERT INTO email_messages (id, user_id, workspace_id, campaign_id, to_address, subject, body, template, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
     id,
     input.userId,
+    input.workspaceId ?? null,
     input.campaignId ?? null,
     to,
     input.subject.slice(0, 300),
@@ -213,6 +263,7 @@ export async function sendEmail(input: SendInput): Promise<SendResult> {
     };
   } catch (err) {
     const c = classify(err);
+    if (reserved && input.workspaceId) releaseSendSlot(input.workspaceId);
     run(
       'UPDATE email_messages SET status = ?, error = ? WHERE id = ?',
       'failed',

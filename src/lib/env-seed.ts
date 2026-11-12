@@ -308,12 +308,18 @@ export function runEnvSeed(userId: string, trigger: 'first_run' | 'manual' = 'ma
       continue;
     }
     const id = existing?.id ?? newId();
+    // Credentials seeded for a user land in that user's active workspace, never
+    // in the shared NULL workspace, so other clients cannot see them.
+    const workspaceId =
+      get<{ active_workspace_id: string | null }>('SELECT active_workspace_id FROM users WHERE id = ?', userId)
+        ?.active_workspace_id ?? null;
     run(
-      `INSERT INTO connected_accounts (id, platform_id, user_id, account_name, external_id, credentials_cipher,
+      `INSERT INTO connected_accounts (id, platform_id, user_id, workspace_id, account_name, external_id, credentials_cipher,
          scopes, token_expires_at, status, last_verified_at, last_error, meta_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'unverified', NULL, NULL, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'unverified', NULL, NULL, ?, ?, ?)
        ON CONFLICT(platform_id, account_name) DO UPDATE SET
          user_id = excluded.user_id,
+         workspace_id = excluded.workspace_id,
          credentials_cipher = excluded.credentials_cipher,
          token_expires_at = excluded.token_expires_at,
          status = 'unverified',
@@ -323,6 +329,7 @@ export function runEnvSeed(userId: string, trigger: 'first_run' | 'manual' = 'ma
       id,
       account.platformId,
       userId,
+      workspaceId,
       account.accountName,
       encryptJson(account.credentials),
       adapter.oauth?.scopes.join(' ') ?? '',

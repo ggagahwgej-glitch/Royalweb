@@ -186,6 +186,24 @@ compliance guard and suppression list — runs against the real application and 
   engine and is labelled `mode:"template"`. The AI path uses the same prompt, the same editorial gate
   and the same opt-out enforcement.
 
+## Automation and multi-client checks (T36–T44)
+
+| # | Check | Result |
+| --- | --- | --- |
+| T36 | Alert channels are real: a test alert reaches the Telegram API | pass — 1 message captured by the API double |
+| T37 | A dead worker raises a real external alert | pass — heartbeat aged 600 s, `worker_dead` delivered |
+| T38 | A retry sequence that runs out raises an alert | pass — `retries_exhausted` recorded after the budget was spent |
+| T39 | Full-database snapshot is encrypted and restores offline | pass — sealed file, `npm run db:restore` produced a valid SQLite database |
+| T40 | A feed article becomes a campaign with 25 drafts held for approval | pass — 25 drafts, all `draft` |
+| T41 | Evergreen recycling re-queues a varied copy as a draft only | pass — 25 drafts, text varied, mode `varied` |
+| T42 | Warm-up caps the daily sends and refuses the next one | pass — 200, 200, then HTTP 429 `daily_limit` |
+| T43 | IMAP reply detection pauses the follow-up sequence | pass — reply stored, follow-up HTTP 409 `reply_paused` |
+| T44 | Workspaces isolate accounts, campaigns and sender identity | pass — new workspace shows 0 campaigns / 0 accounts, switching back restores the original |
+
+The suite now starts local doubles for the Telegram Bot API (3998), an RSS feed (3997) and an IMAP server
+(9143) so every outbound call is a real network round trip that the test can inspect. The production
+throttles are cleared at suite start (and again before the warm-up test) rather than relaxed.
+
 ## Reproducing
 
 ```bash

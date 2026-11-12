@@ -13,7 +13,11 @@ export const GET = handler(async (_req, _ctx, auth) => {
     `SELECT a.*, p.name AS platform_name, p.automation FROM connected_accounts a
        JOIN platforms p ON p.id = a.platform_id
       WHERE a.user_id = ? AND a.status != 'revoked'
+        AND (a.workspace_id = ? OR (a.workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))
       ORDER BY p.sort_order, a.created_at`,
+    auth.user.id,
+    auth.workspaceId,
+    auth.workspaceId,
     auth.user.id
   );
   return jsonOk({ accounts: rows.map(accountOut) });
@@ -55,15 +59,16 @@ export const POST = handler(async (req, _ctx, auth) => {
 
   const id = existing?.id ?? newId();
   run(
-    `INSERT INTO connected_accounts (id, platform_id, user_id, account_name, external_id, credentials_cipher,
-       scopes, token_expires_at, status, last_verified_at, meta_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?, ?, ?, ?)
+    `INSERT INTO connected_accounts (id, platform_id, user_id, workspace_id, account_name, external_id,
+       credentials_cipher, scopes, token_expires_at, status, last_verified_at, meta_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?, ?, ?, ?)
      ON CONFLICT(platform_id, account_name) DO UPDATE SET credentials_cipher = excluded.credentials_cipher,
        external_id = excluded.external_id, status = 'connected', last_verified_at = excluded.last_verified_at,
        last_error = NULL, meta_json = excluded.meta_json, updated_at = excluded.updated_at`,
     id,
     body.platformId,
     auth.user.id,
+    auth.workspaceId,
     accountName,
     verification.externalId ?? null,
     encryptJson(credentials),

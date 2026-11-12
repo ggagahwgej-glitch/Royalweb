@@ -406,4 +406,190 @@ export const migrations: Migration[] = [
     ALTER TABLE connected_accounts ADD COLUMN restored_from_backup INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 6,
+    name: 'workspaces_alerts_snapshots_rss_warmup',
+    sql: `
+    -- ── workspaces (agency mode) ──────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      slug        TEXT NOT NULL,
+      color       TEXT NOT NULL DEFAULT 'gold',
+      archived    INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL,
+      UNIQUE (user_id, slug)
+    );
+    ALTER TABLE users ADD COLUMN active_workspace_id TEXT;
+
+    -- Business identity per workspace. Mirrors user_settings so a workspace can
+    -- be a different client, and getSettings keeps working unchanged.
+    CREATE TABLE IF NOT EXISTS workspace_settings (
+      workspace_id            TEXT PRIMARY KEY,
+      business_name           TEXT NOT NULL DEFAULT 'ROYALWEB',
+      tagline                 TEXT NOT NULL DEFAULT '',
+      business_description    TEXT NOT NULL DEFAULT '',
+      services_json           TEXT NOT NULL DEFAULT '[]',
+      target_customers_json   TEXT NOT NULL DEFAULT '[]',
+      price_min               TEXT NOT NULL DEFAULT '',
+      price_max               TEXT NOT NULL DEFAULT '',
+      cta_primary             TEXT NOT NULL DEFAULT '',
+      cta_secondary           TEXT NOT NULL DEFAULT '',
+      website_url             TEXT NOT NULL DEFAULT '',
+      whatsapp_url            TEXT NOT NULL DEFAULT '',
+      contact_email           TEXT NOT NULL DEFAULT '',
+      contact_phone           TEXT NOT NULL DEFAULT '',
+      public_contact_visible  INTEGER NOT NULL DEFAULT 0,
+      default_timezone        TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+      default_language        TEXT NOT NULL DEFAULT 'English',
+      ai_provider             TEXT NOT NULL DEFAULT 'auto',
+      ai_model                TEXT NOT NULL DEFAULT '',
+      posting_frequency_hours INTEGER NOT NULL DEFAULT 24,
+      duplicate_window_hours  INTEGER NOT NULL DEFAULT 72,
+      global_pause            INTEGER NOT NULL DEFAULT 0,
+      auto_publish_enabled    INTEGER NOT NULL DEFAULT 1,
+      updated_at              TEXT NOT NULL
+    );
+
+    ALTER TABLE campaigns ADD COLUMN workspace_id TEXT;
+    ALTER TABLE media_assets ADD COLUMN workspace_id TEXT;
+    ALTER TABLE connected_accounts ADD COLUMN workspace_id TEXT;
+    CREATE INDEX IF NOT EXISTS idx_campaigns_workspace ON campaigns(workspace_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_media_workspace ON media_assets(workspace_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_accounts_workspace ON connected_accounts(workspace_id, platform_id);
+
+    -- ── alerts ────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS alert_events (
+      id          TEXT PRIMARY KEY,
+      workspace_id TEXT,
+      code        TEXT NOT NULL,
+      severity    TEXT NOT NULL DEFAULT 'critical',   -- critical | warning
+      title       TEXT NOT NULL,
+      detail      TEXT NOT NULL DEFAULT '',
+      meta_json   TEXT NOT NULL DEFAULT '{}',
+      channel     TEXT NOT NULL DEFAULT '',            -- telegram | email | none
+      delivered   INTEGER NOT NULL DEFAULT 0,
+      error       TEXT,
+      created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_events_created ON alert_events(created_at DESC);
+    -- Dedupe: one alert per code per cooldown window, so a dead worker does not
+    -- send a message every tick.
+    CREATE TABLE IF NOT EXISTS alert_state (
+      key           TEXT PRIMARY KEY,
+      last_fired_at TEXT NOT NULL,
+      count         INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- ── full-database snapshots ───────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS snapshots (
+      id          TEXT PRIMARY KEY,
+      file_name   TEXT NOT NULL,
+      bytes       INTEGER NOT NULL,
+      sha256      TEXT NOT NULL,
+      scope       TEXT NOT NULL DEFAULT 'full',       -- full | credentials
+      trigger     TEXT NOT NULL DEFAULT 'manual',     -- manual | schedule
+      tables_json TEXT NOT NULL DEFAULT '{}',
+      created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_created ON snapshots(created_at DESC);
+
+    -- ── rss / blog ingestion ──────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS rss_feeds (
+      id              TEXT PRIMARY KEY,
+      user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      workspace_id    TEXT,
+      url             TEXT NOT NULL,
+      label           TEXT NOT NULL DEFAULT '',
+      enabled         INTEGER NOT NULL DEFAULT 1,
+      auto_generate   INTEGER NOT NULL DEFAULT 1,
+      last_checked_at TEXT,
+      last_error      TEXT,
+      last_item_at    TEXT,
+      items_seen      INTEGER NOT NULL DEFAULT 0,
+      created_at      TEXT NOT NULL,
+      UNIQUE (workspace_id, url)
+    );
+    CREATE TABLE IF NOT EXISTS rss_items (
+      id           TEXT PRIMARY KEY,
+      feed_id      TEXT NOT NULL REFERENCES rss_feeds(id) ON DELETE CASCADE,
+      guid_hash    TEXT NOT NULL,
+      title        TEXT NOT NULL DEFAULT '',
+      link         TEXT NOT NULL DEFAULT '',
+      summary      TEXT NOT NULL DEFAULT '',
+      published_at TEXT,
+      campaign_id  TEXT,
+      state        TEXT NOT NULL DEFAULT 'new',       -- new | drafted | failed | skipped
+      error        TEXT,
+      created_at   TEXT NOT NULL,
+      UNIQUE (feed_id, guid_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rss_items_created ON rss_items(created_at DESC);
+
+    -- Evergreen recycling: a finished campaign can be queued again later with a
+    -- light variation instead of being republished verbatim.
+    ALTER TABLE campaigns ADD COLUMN recycle_after_days INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE campaigns ADD COLUMN recycled_from TEXT;
+    ALTER TABLE campaigns ADD COLUMN source_feed_id TEXT;
+
+    -- ── email warm-up + reply detection ───────────────────────────────────
+    CREATE TABLE IF NOT EXISTS workspace_email_settings (
+      workspace_id      TEXT PRIMARY KEY,
+      smtp_host         TEXT NOT NULL DEFAULT '',
+      smtp_port         INTEGER NOT NULL DEFAULT 587,
+      smtp_user         TEXT NOT NULL DEFAULT '',
+      smtp_pass_cipher  TEXT NOT NULL DEFAULT '',
+      from_address      TEXT NOT NULL DEFAULT '',
+      from_name         TEXT NOT NULL DEFAULT '',
+      reply_to          TEXT NOT NULL DEFAULT '',
+      postal_address    TEXT NOT NULL DEFAULT '',
+      unsubscribe_url   TEXT NOT NULL DEFAULT '',
+      ramp_enabled      INTEGER NOT NULL DEFAULT 1,
+      ramp_start        INTEGER NOT NULL DEFAULT 5,
+      ramp_increment    INTEGER NOT NULL DEFAULT 3,
+      ramp_max          INTEGER NOT NULL DEFAULT 50,
+      ramp_started_at   TEXT,
+      imap_enabled      INTEGER NOT NULL DEFAULT 0,
+      imap_host         TEXT NOT NULL DEFAULT '',
+      imap_port         INTEGER NOT NULL DEFAULT 993,
+      imap_user         TEXT NOT NULL DEFAULT '',
+      imap_pass_cipher  TEXT NOT NULL DEFAULT '',
+      imap_last_poll_at TEXT,
+      imap_last_error   TEXT,
+      updated_at        TEXT NOT NULL
+    );
+    ALTER TABLE email_messages ADD COLUMN workspace_id TEXT;
+    -- Rows created before workspace scoping belong to the account's first workspace.
+UPDATE connected_accounts SET workspace_id = (SELECT active_workspace_id FROM users ORDER BY created_at LIMIT 1)
+  WHERE workspace_id IS NULL;
+UPDATE campaigns SET workspace_id = (SELECT active_workspace_id FROM users ORDER BY created_at LIMIT 1)
+  WHERE workspace_id IS NULL;
+UPDATE media_assets SET workspace_id = (SELECT active_workspace_id FROM users ORDER BY created_at LIMIT 1)
+  WHERE workspace_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_email_messages_workspace ON email_messages(workspace_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS email_send_daily (
+      workspace_id TEXT NOT NULL,
+      day          TEXT NOT NULL,
+      sent         INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (workspace_id, day)
+    );
+    CREATE TABLE IF NOT EXISTS email_replies (
+      id            TEXT PRIMARY KEY,
+      workspace_id  TEXT,
+      from_address  TEXT NOT NULL,
+      subject       TEXT NOT NULL DEFAULT '',
+      snippet       TEXT NOT NULL DEFAULT '',
+      received_at   TEXT NOT NULL,
+      matched_to    TEXT,
+      matched_id    TEXT,
+      paused_followups INTEGER NOT NULL DEFAULT 0,
+      created_at    TEXT NOT NULL,
+      UNIQUE (workspace_id, from_address, received_at, subject)
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_replies_created ON email_replies(created_at DESC);
+    `,
+  },
 ];

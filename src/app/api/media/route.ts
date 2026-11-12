@@ -14,15 +14,18 @@ const VIDEO_TYPES = ['video/mp4', 'video/quicktime', 'video/webm'];
 const MAX_IMAGE = 25 * 1024 * 1024;
 const MAX_VIDEO = 200 * 1024 * 1024;
 
-export const GET = handler(async (req) => {
+export const GET = handler(async (req, _ctx, auth) => {
   const url = new URL(req.url);
   const campaignId = url.searchParams.get('campaignId');
   const q = url.searchParams.get('q');
   const from = url.searchParams.get('from');
   const to = url.searchParams.get('to');
 
-  const where: string[] = ['m.deleted_at IS NULL'];
-  const params: unknown[] = [];
+  const where: string[] = [
+    'm.deleted_at IS NULL',
+    '(m.workspace_id = ? OR (m.workspace_id IS NULL AND ? = (SELECT active_workspace_id FROM users WHERE id = ?)))',
+  ];
+  const params: unknown[] = [auth.workspaceId, auth.workspaceId, auth.user.id];
   if (campaignId) {
     where.push('m.campaign_id = ?');
     params.push(campaignId);
@@ -103,12 +106,13 @@ export const POST = handler(async (req, ctx, auth) => {
     }
 
     run(
-      `INSERT INTO media_assets (id, campaign_id, user_id, original_name, filename, mime, bytes, width, height,
-         kind, sha256, alt_text, analysis_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
+      `INSERT INTO media_assets (id, campaign_id, user_id, workspace_id, original_name, filename, mime, bytes, width,
+         height, kind, sha256, alt_text, analysis_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
       id,
       campaignId,
       auth.user.id,
+      auth.workspaceId,
       file.name.slice(0, 200),
       filename,
       isImage ? (type || 'image/jpeg') : type || 'video/mp4',

@@ -2,6 +2,7 @@ import 'server-only';
 import { cookies, headers } from 'next/headers';
 import { get, run, nowIso, newId } from '@/lib/db';
 import { hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr } from '@/lib/crypto';
+import { activeWorkspaceId } from '@/lib/workspace';
 
 export const SESSION_COOKIE = 'rw_session';
 export const SESSION_TTL_MS = 1000 * 60 * 60 * 12; // 12h idle+absolute session lifetime
@@ -16,6 +17,8 @@ export interface SessionUser {
 export interface AuthContext {
   user: SessionUser;
   sessionId: string;
+  /** The workspace this request acts on (agency mode). */
+  workspaceId: string;
 }
 
 interface UserRow {
@@ -91,6 +94,7 @@ export async function getSession(): Promise<AuthContext | null> {
   return {
     sessionId: row.session_id,
     user: { id: row.id, email: row.email, name: row.name, role: row.role },
+    workspaceId: activeWorkspaceId(row.id),
   };
 }
 

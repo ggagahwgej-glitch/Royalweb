@@ -210,9 +210,13 @@ export async function publishJob(
   const account = claimed.account_id
     ? get<AccountRow>('SELECT * FROM connected_accounts WHERE id = ?', claimed.account_id)
     : get<AccountRow>(
-        `SELECT * FROM connected_accounts WHERE platform_id = ? AND user_id = ? AND status = 'connected' ORDER BY created_at LIMIT 1`,
+        `SELECT * FROM connected_accounts
+          WHERE platform_id = ? AND user_id = ? AND status = 'connected'
+            AND (workspace_id = ? OR workspace_id IS NULL)
+          ORDER BY created_at LIMIT 1`,
         claimed.platform_id,
-        String(campaign.user_id)
+        String(campaign.user_id),
+        String(campaign.workspace_id ?? '')
       );
 
   if (!account) {
@@ -517,6 +521,41 @@ export async function publishJob(
     errorCode,
     retryable: false,
   });
+
+  // External alert: a retry sequence that ran out, or a token the platform now
+  // refuses. Both need a human; both are deduped so a broken campaign does not
+  // page once per job.
+  try {
+    {
+      const { raiseAlert } = await import('@/lib/alerts');
+      const campaign = get<{ user_id: string; name: string; workspace_id: string | null }>(
+        'SELECT user_id, name, workspace_id FROM campaigns WHERE id = ?',
+        claimed.campaign_id
+      );
+      if (authError) {
+        await raiseAlert({
+          code: 'token_expired',
+          title: `${platform.name} credential rejected — publishing stopped`,
+          detail: `${platform.name} refused the stored credentials: ${message}\n
+Reconnect the account (Connections → Reconnect) or fix the token in .env.local, then press Verify.`,
+          workspaceId: campaign?.workspace_id ?? null,
+          meta: { platformId: claimed.platform_id, jobId: claimed.id },
+          dedupeMinutes: 360,
+        });
+      } else {
+        await raiseAlert({
+          code: 'retries_exhausted',
+          title: `${platform.name} failed after ${claimed.max_attempts} attempts`,
+          detail: `Campaign “${campaign?.name ?? claimed.campaign_id}” · last error: ${message}`,
+          workspaceId: campaign?.workspace_id ?? null,
+          meta: { platformId: claimed.platform_id, jobId: claimed.id, attempts: claimed.attempts },
+          dedupeMinutes: 60,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[engine] alert dispatch failed:', err);
+  }
   // Do not leave the campaign stuck in "publishing" when nothing else is left
   // to run — the dashboard would otherwise show progress that will never move.
   finaliseCampaign(claimed.campaign_id);

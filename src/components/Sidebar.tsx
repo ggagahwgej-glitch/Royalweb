@@ -2,12 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   BarChart3,
   CalendarDays,
+  Building2,
   ChevronRight,
+  Workflow,
   CircleAlert,
   Clock3,
   LayoutDashboard,
@@ -51,6 +53,7 @@ const SECTIONS = [
     label: 'Publishing',
     items: [
       { href: '/dashboard/scheduled', label: 'Scheduled Posts', icon: Clock3 },
+      { href: '/dashboard/automation', label: 'Automation & Alerts', icon: Workflow },
       { href: '/dashboard/published', label: 'Published Posts', icon: Activity },
       { href: '/dashboard/manual', label: 'Manual Queue', icon: PenLine },
       { href: '/dashboard/email', label: 'Email Outreach', icon: Mail },
@@ -88,6 +91,31 @@ export function Sidebar({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string; active: boolean }[]>([]);
+  const [switching, setSwitching] = useState(false);
+
+  const loadWorkspaces = useCallback(async () => {
+    try {
+      const data = await api<{ workspaces: { id: string; name: string; active: boolean }[] }>('/api/workspaces');
+      setWorkspaces(data.workspaces ?? []);
+    } catch {
+      /* the switcher is optional UI — never block the shell on it */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadWorkspaces();
+  }, [loadWorkspaces]);
+
+  async function switchTo(id: string) {
+    setSwitching(true);
+    try {
+      await api('/api/workspaces', { method: 'PATCH', body: { activeId: id } });
+      router.refresh();
+    } finally {
+      setSwitching(false);
+    }
+  }
 
   const isActive = (href: string) =>
     href === '/dashboard' ? pathname === '/dashboard' : pathname.startsWith(href);
@@ -115,6 +143,25 @@ export function Sidebar({
       </div>
 
       <div className="mx-3 mb-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+        {workspaces.length > 1 ? (
+          <label className="mb-2 block">
+            <span className="mb-1 flex items-center gap-1 text-[9.5px] font-semibold uppercase tracking-[0.18em] text-ink-500">
+              <Building2 size={10} /> Workspace
+            </span>
+            <select
+              value={workspaces.find((w) => w.active)?.id ?? ''}
+              disabled={switching}
+              onChange={(e) => void switchTo(e.target.value)}
+              className="w-full rounded-md border border-white/[0.08] bg-[#0b0b0c] px-2 py-1.5 text-[11.5px] text-ink-200 outline-none focus:border-gold-500/40"
+            >
+              {workspaces.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="truncate text-[12px] font-medium text-ink-200">{businessName}</div>
         <div className="mt-1 flex items-center gap-1.5 text-[10.5px]">
           {paused ? (

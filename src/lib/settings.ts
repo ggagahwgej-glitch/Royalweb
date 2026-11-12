@@ -1,9 +1,11 @@
 import 'server-only';
 import { get, run, nowIso } from '@/lib/db';
+import { activeWorkspace } from '@/lib/workspace';
 import type { BusinessProfile } from '@/lib/platforms/types';
 
 export interface AppSettings {
   userId: string;
+  workspaceId: string;
   businessName: string;
   tagline: string;
   businessDescription: string;
@@ -42,23 +44,55 @@ function parseList(value: unknown): string[] {
   }
 }
 
-export function getSettings(userId: string): AppSettings {
-  let row = get<Row>('SELECT * FROM user_settings WHERE user_id = ?', userId);
+/**
+ * Settings belong to the *active workspace*, not to the user: an agency client
+ * keeps their own business identity. The legacy `user_settings` row is used
+ * only as the seed for a workspace that has none yet.
+ */
+export function getSettings(userId: string, workspaceId?: string): AppSettings {
+  const workspace = workspaceId ? null : activeWorkspace(userId);
+  const wsId = workspaceId ?? workspace!.id;
+  let row = get<Row>('SELECT * FROM workspace_settings WHERE workspace_id = ?', wsId);
   if (!row) {
+    const seed = get<Row>('SELECT * FROM user_settings WHERE user_id = ?', userId);
     const ts = nowIso();
     run(
-      `INSERT INTO user_settings (user_id, business_name, tagline, business_description, services_json,
+      `INSERT INTO workspace_settings (workspace_id, business_name, tagline, business_description, services_json,
         target_customers_json, price_min, price_max, cta_primary, cta_secondary, website_url, whatsapp_url,
-        contact_email, contact_phone, public_contact_visible, updated_at)
-       VALUES (?, 'ROYALWEB', 'Website Design & Development', '', '[]', '[]', '2999', '4999',
-        'Get Your Business Website', 'Contact Us / WhatsApp Enquiry', '', '', '', '', 0, ?)`,
-      userId,
+        contact_email, contact_phone, public_contact_visible, default_timezone, default_language, ai_provider,
+        ai_model, posting_frequency_hours, duplicate_window_hours, global_pause, auto_publish_enabled, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(workspace_id) DO NOTHING`,
+      wsId,
+      String(seed?.business_name ?? 'ROYALWEB'),
+      String(seed?.tagline ?? 'Website Design & Development'),
+      String(seed?.business_description ?? ''),
+      String(seed?.services_json ?? '[]'),
+      String(seed?.target_customers_json ?? '[]'),
+      String(seed?.price_min ?? '2999'),
+      String(seed?.price_max ?? '4999'),
+      String(seed?.cta_primary ?? 'Get Your Business Website'),
+      String(seed?.cta_secondary ?? 'Contact Us / WhatsApp Enquiry'),
+      String(seed?.website_url ?? ''),
+      String(seed?.whatsapp_url ?? ''),
+      String(seed?.contact_email ?? ''),
+      String(seed?.contact_phone ?? ''),
+      Number(seed?.public_contact_visible ?? 0),
+      String(seed?.default_timezone ?? 'Asia/Kolkata'),
+      String(seed?.default_language ?? 'English'),
+      String(seed?.ai_provider ?? 'auto'),
+      String(seed?.ai_model ?? ''),
+      Number(seed?.posting_frequency_hours ?? 24),
+      Number(seed?.duplicate_window_hours ?? 72),
+      Number(seed?.global_pause ?? 0),
+      Number(seed?.auto_publish_enabled ?? 1),
       ts
     );
-    row = get<Row>('SELECT * FROM user_settings WHERE user_id = ?', userId)!;
+    row = get<Row>('SELECT * FROM workspace_settings WHERE workspace_id = ?', wsId)!;
   }
   return {
     userId,
+    workspaceId: wsId,
     businessName: String(row.business_name ?? 'ROYALWEB'),
     tagline: String(row.tagline ?? ''),
     businessDescription: String(row.business_description ?? ''),
@@ -129,7 +163,7 @@ export const SETTING_COLUMNS: Record<string, { column: string; type: 'string' | 
   autoPublishEnabled: { column: 'auto_publish_enabled', type: 'boolean' },
 };
 
-export function updateSettings(userId: string, patch: Record<string, unknown>) {
+export function updateSettings(userId: string, patch: Record<string, unknown>, workspaceId?: string) {
   const assignments: string[] = [];
   const values: unknown[] = [];
   for (const [key, value] of Object.entries(patch)) {
@@ -141,11 +175,12 @@ export function updateSettings(userId: string, patch: Record<string, unknown>) {
     else if (spec.type === 'number') values.push(Number(value));
     else values.push(String(value));
   }
-  if (!assignments.length) return getSettings(userId);
+  if (!assignments.length) return getSettings(userId, workspaceId);
+  const wsId = workspaceId ?? getSettings(userId).workspaceId;
   assignments.push('updated_at = ?');
-  values.push(nowIso(), userId);
-  run(`UPDATE user_settings SET ${assignments.join(', ')} WHERE user_id = ?`, ...values);
-  return getSettings(userId);
+  values.push(nowIso(), wsId);
+  run(`UPDATE workspace_settings SET ${assignments.join(', ')} WHERE workspace_id = ?`, ...values);
+  return getSettings(userId, wsId);
 }
 
 export function publicContactLine(settings: AppSettings): string {

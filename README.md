@@ -50,6 +50,22 @@ approval requirements and known constraints.
 
 ---
 
+### Automation and multi-client workspaces
+
+- **External alerts** (Telegram + alert email + webhook) when the worker dies, a token expires permanently or
+  a retry sequence runs out; every attempt is logged with the channel result.
+- **Encrypted full-database snapshots** on a daily/weekly schedule, downloadable and restorable offline with
+  `npm run db:restore`.
+- **RSS/blog ingestion**: a feed article becomes a campaign with all 25 platform drafts, held for approval.
+- **Evergreen recycling**: re-queue a finished campaign after 60–90 days with a light, clearly-labelled
+  variation — as a draft, never a verbatim repost.
+- **Email warm-up + IMAP reply detection**: a ramping daily cap that refuses over-limit sends with HTTP 429,
+  and follow-ups that pause themselves the moment a lead replies.
+- **Workspaces** per client: isolated accounts, sender identity, campaigns and calendar, switchable from the
+  sidebar.
+
+See [docs/AUTOMATION.md](docs/AUTOMATION.md) for behaviour, limits and API endpoints.
+
 ## Quick start
 
 ```bash
