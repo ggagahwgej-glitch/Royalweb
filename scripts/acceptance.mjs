@@ -1437,6 +1437,41 @@ async function main() {
       `anonymous=${anonTick.status}/${anonMonitor.status} · session=${cronTick.status}`
     );
 
+    // TEST 51–52 — self-diagnosis: deep health probes and the doctor preflight
+    const deepHealth = await req('/api/health?deep=1');
+    const deep = deepHealth.json?.data ?? {};
+    const deepChecks = Array.isArray(deep.checks) ? deep.checks : [];
+    const deepIds = deepChecks.map((c) => c.id);
+    const deepOk =
+      deepHealth.status === 200 &&
+      deep.status === 'ok' &&
+      ['node:sqlite', 'storage', 'database', 'migrations', 'encryption'].every((id) => deepIds.includes(id)) &&
+      deepChecks.every((c) => c.ok) &&
+      deep.encryption?.ok === true &&
+      ['env', 'file'].includes(deep.encryption?.keySource);
+    record(
+      'T51',
+      'Deep health probe verifies Node, storage, database, migrations and encryption',
+      deepOk ? 'pass' : 'fail',
+      `checks=${deepIds.join(',')} · key=${deep.encryption?.keySource} · dataDir=${deep.runtime?.dataDir}`
+    );
+
+    let doctor = null;
+    try {
+      const { execFileSync } = await import('node:child_process');
+      doctor = JSON.parse(
+        execFileSync(process.execPath, ['scripts/doctor.mjs', '--json'], { encoding: 'utf8', timeout: 60_000 })
+      );
+    } catch (err) {
+      doctor = { ok: false, error: err.message };
+    }
+    record(
+      'T52',
+      'Doctor preflight passes in this environment (Node floor, writable data dir, master key)',
+      doctor?.ok === true ? 'pass' : 'fail',
+      `node=${doctor?.node} dataDir=${doctor?.dataDir} key=${doctor?.keySource} checks=${doctor?.checks?.length ?? 0}`
+    );
+
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');
     record('X1', 'Private contact details excluded from generated content', contactHidden ? 'pass' : 'fail');

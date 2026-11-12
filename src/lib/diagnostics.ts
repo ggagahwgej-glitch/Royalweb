@@ -9,6 +9,7 @@ import { ffmpegPath } from '@/lib/media/video';
 import { seedPlatforms } from '@/lib/bootstrap';
 import { getAdapter } from '@/lib/platforms';
 import { guideFor, classifyMessage, type GuideAction } from '@/lib/errors/guide';
+import { dataDir, runtimeReport } from '@/lib/runtime';
 
 /**
  * Self-diagnosis.
@@ -542,7 +543,9 @@ export async function buildDiagnostics(userId: string): Promise<DiagnosticsRepor
   // ── storage ────────────────────────────────────────────────────────────────
   let freeGb: number | null = null;
   try {
-    const stats = fs.statfsSync(process.cwd());
+    // The bundle itself is read-only on serverless hosts; the data directory is
+    // the volume that actually fills up.
+    const stats = fs.statfsSync(dataDir());
     freeGb = (stats.bavail * stats.bsize) / 1024 ** 3;
   } catch {
     /* not supported */
@@ -554,6 +557,40 @@ export async function buildDiagnostics(userId: string): Promise<DiagnosticsRepor
     detail: freeGb === null ? 'Could not read filesystem statistics' : `${freeGb.toFixed(1)} GB free`,
     metric: freeGb === null ? 'unknown' : `${freeGb.toFixed(1)} GB`,
   });
+  // Deployment shape: ephemeral storage and a fallback data directory explain
+  // almost every "my data disappeared" or "the page 500s" report.
+  const deployment = runtimeReport();
+  checks.push({
+    id: 'deployment',
+    title: 'Deployment storage',
+    status: deployment.dataDirIssue ? 'fail' : deployment.storage === 'ephemeral' ? 'warn' : 'ok',
+    detail: deployment.dataDirIssue
+      ? deployment.dataDirIssue
+      : `${deployment.platform} · ${deployment.storage} · ${deployment.dataDir}${deployment.storage === 'ephemeral' ? ' (resets on redeploy)' : ''}`,
+    metric: deployment.storage,
+  });
+  if (deployment.dataDirIssue || deployment.storage === 'ephemeral') {
+    addIssue({
+      id: 'deployment-storage',
+      code: 'deployment_storage',
+      severity: deployment.dataDirIssue ? 'critical' : 'info',
+      title: deployment.dataDirIssue ? 'The data directory is not usable' : 'Storage is ephemeral on this host',
+      meaning: deployment.dataDirIssue
+        ? 'The configured data directory cannot be written, so the database falls back to temporary storage.'
+        : 'The database and uploads live in /tmp and are lost whenever the instance recycles.',
+      why: [
+        'The app was deployed to a serverless platform (Vercel/Netlify/Lambda) without a volume',
+        'ROYALWEB_DATA_DIR points at a path that does not exist or is read-only',
+      ],
+      steps: [
+        'Deploy with a persistent disk (Docker, Railway, Render, Fly) for real data.',
+        'On a serverless host, install a volume or accept demo/ephemeral data and re-run setup after each redeploy.',
+        'Set ROYALWEB_ENCRYPTION_KEY so saved credentials are still readable when the instance restarts.',
+      ],
+      actions: [{ label: 'Deployment guide', href: '/dashboard/settings' }],
+    });
+  }
+
   if (freeGb !== null && freeGb < 0.5) {
     addIssue({
       id: 'disk-space',

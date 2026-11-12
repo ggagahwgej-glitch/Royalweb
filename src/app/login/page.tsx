@@ -3,15 +3,25 @@ import { getSession, countUsers } from '@/lib/auth';
 import { ensureBootstrap } from '@/lib/bootstrap';
 import { LoginForm } from '@/components/LoginForm';
 import { BrandMark } from '@/components/BrandMark';
+import { StartupFailure } from '@/components/StartupFailure';
 import { ShieldCheck, Sparkles, Layers } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
 export default async function LoginPage() {
-  ensureBootstrap();
-  const session = await getSession();
-  if (session) redirect('/dashboard');
-  const needsSetup = countUsers() === 0;
+  let signedIn = false;
+  let needsSetup = false;
+  try {
+    ensureBootstrap();
+    signedIn = Boolean(await getSession());
+    needsSetup = countUsers() === 0;
+  } catch (err) {
+    // Render the real cause (data directory, Node version, key) rather than
+    // letting the request die as an opaque server-side exception.
+    console.error('[login] startup failed:', err);
+    return <StartupFailure error={err} where="login" />;
+  }
+  if (signedIn) redirect('/dashboard');
 
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1.1fr_1fr]">

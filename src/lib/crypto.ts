@@ -2,6 +2,7 @@ import 'server-only';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { dataDir, isServerless } from '@/lib/runtime';
 
 /**
  * Cryptographic primitives for ROYALWEB AUTOPILOT.
@@ -10,46 +11,126 @@ import path from 'node:path';
  * - Session tokens: 256-bit random, stored only as SHA-256 hashes.
  */
 
-const DATA_DIR = process.env.ROYALWEB_DATA_DIR || path.join(process.cwd(), 'data');
-const KEY_FILE = path.join(DATA_DIR, '.keys', 'master.key');
+/** Both names are accepted: docs used ROYALWEB_MASTER_KEY, the code used ENCRYPTION_KEY. */
+const ENV_KEY_NAMES = ['ROYALWEB_ENCRYPTION_KEY', 'ROYALWEB_MASTER_KEY'] as const;
 
 let cachedKey: Buffer | null = null;
+let cachedSource: 'env' | 'file' | 'memory' | null = null;
+let cachedEnvName: string | null = null;
+
+/** The key file lives in the data directory resolved by runtime.ts (never the bundle). */
+export function keyFilePath(): string {
+  return path.join(dataDir(), '.keys', 'master.key');
+}
+
+function fromEnvironment(): { key: Buffer; name: string } | null {
+  for (const name of ENV_KEY_NAMES) {
+    const raw = process.env[name]?.trim();
+    if (!raw) continue;
+    const buf = /^[0-9a-f]{64}$/i.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64');
+    if (buf.length !== 32) {
+      throw new Error(
+        `${name} must decode to exactly 32 bytes — use 64 hex characters (openssl rand -hex 32) or base64 (openssl rand -base64 32).`
+      );
+    }
+    return { key: buf, name };
+  }
+  return null;
+}
 
 /**
  * Master key resolution order:
- *  1. ROYALWEB_ENCRYPTION_KEY (base64 or hex, 32 bytes) — recommended in production.
+ *  1. ROYALWEB_ENCRYPTION_KEY, then ROYALWEB_MASTER_KEY (base64 or hex, 32 bytes)
+ *     — the only safe choice on a serverless host.
  *  2. A generated 32-byte key stored with 0600 permissions in the data directory.
+ *  3. On a serverless host whose data directory refuses the write, an in-memory
+ *     key for this instance (credentials would be unreadable after a recycle, so
+ *     it is logged loudly and reported by /api/health instead of crashing a page
+ *     with EROFS).
  * The key never leaves the server and is excluded from git.
  */
 export function getMasterKey(): Buffer {
   if (cachedKey) return cachedKey;
-  const envKey = process.env.ROYALWEB_ENCRYPTION_KEY;
+  const envKey = fromEnvironment();
   if (envKey) {
-    const buf = /^[0-9a-f]{64}$/i.test(envKey)
-      ? Buffer.from(envKey, 'hex')
-      : Buffer.from(envKey, 'base64');
-    if (buf.length !== 32) {
-      throw new Error(
-        'ROYALWEB_ENCRYPTION_KEY must decode to exactly 32 bytes (base64 or 64-char hex).'
-      );
-    }
-    cachedKey = buf;
-    return buf;
+    cachedKey = envKey.key;
+    cachedSource = 'env';
+    cachedEnvName = envKey.name;
+    return cachedKey;
   }
+
+  const file = keyFilePath();
   try {
-    const raw = fs.readFileSync(KEY_FILE);
+    const raw = fs.readFileSync(file);
     if (raw.length === 32) {
       cachedKey = raw;
+      cachedSource = 'file';
       return raw;
     }
-  } catch {
-    /* generate below */
+    throw new Error(
+      `${file} is ${raw.length} bytes; a master key must be exactly 32. Delete it to regenerate, or set ROYALWEB_ENCRYPTION_KEY.`
+    );
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') throw err;
   }
+
   const fresh = crypto.randomBytes(32);
-  fs.mkdirSync(path.dirname(KEY_FILE), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(KEY_FILE, fresh, { mode: 0o600 });
-  cachedKey = fresh;
-  return fresh;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, fresh, { mode: 0o600 });
+    cachedKey = fresh;
+    cachedSource = 'file';
+    return fresh;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (isServerless()) {
+      console.warn(
+        `[crypto] cannot persist the master key at ${file}: ${reason}. Using an in-memory key for this instance — set ROYALWEB_ENCRYPTION_KEY so saved platform credentials stay readable after the instance recycles.`
+      );
+      cachedKey = fresh;
+      cachedSource = 'memory';
+      return fresh;
+    }
+    throw new Error(
+      `Cannot store the master key at ${file}: ${reason}. Set ROYALWEB_ENCRYPTION_KEY (32 bytes, hex or base64) or make ROYALWEB_DATA_DIR writable.`
+    );
+  }
+}
+
+/** Non-secret description of where the key comes from (for health/diagnostics). */
+export function masterKeyInfo(): { source: 'env' | 'file' | 'memory' | 'unavailable'; variable: string | null; path: string } {
+  const file = keyFilePath();
+  if (!cachedKey) {
+    try {
+      getMasterKey();
+    } catch {
+      /* reported below */
+    }
+  }
+  return {
+    source: cachedSource ?? 'unavailable',
+    variable: cachedSource === 'env' ? cachedEnvName : null,
+    path: file,
+  };
+}
+
+/** Round-trips a probe value through the real cipher. Returns null when healthy. */
+export function encryptionSelfTest(): { ok: boolean; error: string | null; source: string; variable: string | null } {
+  const info = masterKeyInfo();
+  try {
+    const probe = `probe-${crypto.randomUUID()}`;
+    const out = decryptJson<{ probe: string }>(encryptJson({ probe }));
+    if (out.probe !== probe) throw new Error('cipher round-trip returned a different value');
+    return { ok: true, error: null, source: info.source, variable: info.variable };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      source: info.source,
+      variable: info.variable,
+    };
+  }
 }
 
 export function encryptJson(value: unknown): string {

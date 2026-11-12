@@ -79,7 +79,19 @@ See [docs/AUTOMATION.md](docs/AUTOMATION.md) for behaviour, limits and API endpo
 The app needs a **disk** for its SQLite database, uploads and snapshots. That is one command on Docker,
 Railway, Render, Fly.io or any VPS (`Dockerfile`, `railway.json` and `fly.toml` are included). Vercel builds and
 runs too — with cron-driven publishing — but its filesystem is ephemeral, so it is a demo/preview target unless
-you attach durable storage. `/api/health` always reports which mode you are in.
+you attach durable storage. `/api/health` always reports which mode you are in, and `/api/health?deep=1`
+lists every subsystem (Node floor, writable data directory, migrations, master key) as a check.
+
+Node.js **22.13 or newer** is required (`node:sqlite`); on Vercel set *Project Settings → Node.js Version → 22.x*.
+Before or after any deploy, run the preflight:
+
+```bash
+npm run doctor              # Node, data dir, database, master key — non-destructive
+npm run doctor -- --json    # machine-readable, exits 1 if something is wrong
+```
+
+If a page ever fails, it now names the cause (unwritable data directory, old Node, missing key) instead of
+showing only a digest.
 
 Full instructions, plan limits and a troubleshooting table: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
@@ -124,6 +136,7 @@ Nothing in this list is simulated: until an item exists, the UI shows the real s
 
 ```bash
 npm run typecheck
+npm run doctor
 npm run build
 npm run dev &                   # or npm start after build
 TEST_EMAIL=you@example.com TEST_PASSWORD='your-password' npm run acceptance

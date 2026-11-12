@@ -32,7 +32,7 @@ vercel link
 vercel env add NEXT_PUBLIC_APP_NAME production      # optional branding
 vercel env add CRON_SECRET production               # openssl rand -hex 32 — required for cron
 vercel env add PUBLIC_BASE_URL production           # https://<your-project>.vercel.app
-vercel env add ROYALWEB_MASTER_KEY production       # 32+ random chars
+vercel env add ROYALWEB_ENCRYPTION_KEY production   # openssl rand -hex 32 (ROYALWEB_MASTER_KEY is an accepted alias)
 vercel env add ROYALWEB_ADMIN_EMAIL production
 vercel env add ROYALWEB_ADMIN_PASSWORD production
 vercel --prod
@@ -48,7 +48,10 @@ Then open the deployment, create the administrator on first load, and add creden
   Vercel sends `Authorization: Bearer $CRON_SECRET` automatically; without that variable the endpoints refuse
   the call and the dashboard banner warns you.
 - `engines.node >= 22.13` is required and declared in `package.json` — that is the first Node release where
-  `node:sqlite` no longer needs the `--experimental-sqlite` flag.
+  `node:sqlite` no longer needs the `--experimental-sqlite` flag. **Set it in the dashboard too**:
+  Project Settings → General → Node.js Version → **22.x** or **24.x**. Vercel discontinued Node.js 20 on
+  2026-10-01, and a project still on 20 fails at runtime with `node:sqlite` missing — which is exactly the
+  "Application error: a server-side exception" page this app now explains instead of showing silently.
 - The in-process worker and supervisor are skipped on serverless (`src/instrumentation.ts`), so you never get
   a function that hangs on a `setInterval`.
 - Storage paths are resolved by `src/lib/runtime.ts`; nothing tries to write into the read-only bundle.
@@ -82,7 +85,7 @@ One image, one volume, zero cloud-lock.
 docker build -t royalweb .
 docker run -d --name royalweb -p 3000:3000 \
   -v royalweb_data:/app/data \
-  -e ROYALWEB_MASTER_KEY="$(openssl rand -hex 32)" \
+  -e ROYALWEB_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   -e ROYALWEB_ADMIN_EMAIL="you@yourdomain.in" \
   -e ROYALWEB_ADMIN_PASSWORD="a-long-unique-password" \
   -e PUBLIC_BASE_URL="https://app.yourdomain.in" \
@@ -103,7 +106,7 @@ Open `http://localhost:3000`, create the administrator, connect platforms. The c
 ```bash
 railway init && railway up
 railway volume add --mount-path /app/data
-railway variables set ROYALWEB_MASTER_KEY=... ROYALWEB_ADMIN_EMAIL=... ROYALWEB_ADMIN_PASSWORD=... PUBLIC_BASE_URL=https://<domain>
+railway variables set ROYALWEB_ENCRYPTION_KEY=... ROYALWEB_ADMIN_EMAIL=... ROYALWEB_ADMIN_PASSWORD=... PUBLIC_BASE_URL=https://<domain>
 ```
 
 ### Fly.io
@@ -113,7 +116,7 @@ railway variables set ROYALWEB_MASTER_KEY=... ROYALWEB_ADMIN_EMAIL=... ROYALWEB_
 ```bash
 fly launch --no-deploy --copy-config
 fly volumes create royalweb_data --size 3 --region bom
-fly secrets set ROYALWEB_MASTER_KEY=... ROYALWEB_ADMIN_EMAIL=... ROYALWEB_ADMIN_PASSWORD=... PUBLIC_BASE_URL=https://<app>.fly.dev
+fly secrets set ROYALWEB_ENCRYPTION_KEY=... ROYALWEB_ADMIN_EMAIL=... ROYALWEB_ADMIN_PASSWORD=... PUBLIC_BASE_URL=https://<app>.fly.dev
 fly deploy
 ```
 
@@ -130,7 +133,7 @@ WorkingDirectory=/opt/royalweb
 ExecStart=/usr/bin/npm run start
 Environment=NODE_ENV=production
 Environment=ROYALWEB_DATA_DIR=/var/lib/royalweb
-Environment=ROYALWEB_MASTER_KEY=...
+Environment=ROYALWEB_ENCRYPTION_KEY=...
 Restart=always
 ```
 
@@ -143,7 +146,7 @@ they capture the whole database, opt-out list included.
 
 | Variable | Needed | Notes |
 | --- | --- | --- |
-| `ROYALWEB_MASTER_KEY` | **yes** | 32+ random chars. Encrypts every credential. Rotating it makes existing rows unreadable. |
+| `ROYALWEB_ENCRYPTION_KEY` | **yes on serverless** | 32 bytes as 64 hex chars (`openssl rand -hex 32`) or base64. Encrypts every credential. Rotating it makes existing rows unreadable. `ROYALWEB_MASTER_KEY` is accepted as an alias; without either, a key file is generated in the data directory (lost with an ephemeral filesystem). |
 | `ROYALWEB_ADMIN_EMAIL` / `ROYALWEB_ADMIN_PASSWORD` | yes on first boot | Creates the administrator when the database is empty. |
 | `PUBLIC_BASE_URL` | yes in production | Public HTTPS origin. Used for `List-Unsubscribe`, OAuth redirect URIs and image URLs that platforms fetch. |
 | `ROYALWEB_DATA_DIR` | Docker only | `/app/data` in the image; on a VPS point it at `/var/lib/royalweb`. |
@@ -160,10 +163,11 @@ Full list: [`.env.example`](../.env.example).
 ## Smoke test after any deploy
 
 ```bash
-curl -s https://<host>/api/health | jq
+curl -s 'https://<host>/api/health?deep=1' | jq
 ```
 
-Expect `status: "ok"`, `platforms: 25`, and `runtime` telling you the truth:
+Expect `status: "ok"`, `platforms: 25`, every entry in `checks` marked `ok: true` (Node, storage, database,
+encryption), and `runtime` telling you the truth:
 
 ```json
 "runtime": { "platform": "vercel", "serverless": true, "storage": "ephemeral",
@@ -176,6 +180,27 @@ serverless, trigger `POST /api/worker/tick` with `x-worker-secret`, or wait for 
 ---
 
 ## Troubleshooting
+
+### "Application error: a server-side exception has occurred" (with a digest)
+
+That page is Next.js's generic production error. The app now catches the storage failures that used to end up
+there and renders the real message instead, but the three causes are always one of these:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Error page mentions `EACCES` / `EROFS` / `mkdir` | The data directory is not writable (or `ROYALWEB_DATA_DIR` points at a path that does not exist) | Unset `ROYALWEB_DATA_DIR` on Vercel (it falls back to `/tmp/royalweb`), or mount a real volume at that path |
+| `/api/health?deep=1` shows `node:sqlite` failed | The function runtime is Node < 22.13 | Project Settings → General → Node.js Version → 22.x, then redeploy |
+| Everything renders but credentials vanish | No `ROYALWEB_ENCRYPTION_KEY`, so the key file lives in ephemeral storage | `vercel env add ROYALWEB_ENCRYPTION_KEY production`, then re-save the credentials |
+
+Diagnose in one command locally, or open `/api/health?deep=1` on the deployment:
+
+```bash
+npm run doctor            # Node, data dir, database, master key — timings appropriate to the host
+npm run doctor -- --json   # same, machine-readable
+```
+
+If the page still shows the bare generic error, open the failing URL, note the digest, and find that digest in
+the platform log (Vercel → Deployment → Logs → Runtime). The full stack trace is printed there with the message.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
