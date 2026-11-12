@@ -379,4 +379,31 @@ export const migrations: Migration[] = [
     );
     `,
   },
+  {
+    version: 5,
+    name: 'onboarding_and_backups',
+    sql: `
+    -- Where a stored secret came from: 'dashboard' (typed by the operator),
+    -- 'environment' (seeded from .env.local on first run) or 'backup' (imported).
+    ALTER TABLE app_secrets ADD COLUMN source TEXT NOT NULL DEFAULT 'dashboard';
+
+    -- One row per .env.local seeding run, so the UI can say exactly what was
+    -- pre-filled and when, instead of silently trusting environment variables.
+    CREATE TABLE IF NOT EXISTS env_seed_runs (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT,
+      trigger     TEXT NOT NULL DEFAULT 'first_run',   -- first_run | manual
+      secrets     INTEGER NOT NULL DEFAULT 0,
+      accounts    INTEGER NOT NULL DEFAULT 0,
+      skipped_json TEXT NOT NULL DEFAULT '[]',
+      detail_json TEXT NOT NULL DEFAULT '{}',
+      created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_env_seed_runs_created ON env_seed_runs(created_at DESC);
+
+    -- Restored accounts keep the state they had in the backup, but are marked
+    -- so the dashboard can ask for one live verification before publishing.
+    ALTER TABLE connected_accounts ADD COLUMN restored_from_backup INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];

@@ -6,32 +6,43 @@ no third-party credentials. Outbound email is exercised against a local SMTP tes
 (`127.0.0.1:2525`) so the real `nodemailer` transport, AUTH handshake, headers and suppression
 logic all run — only the remote mail provider is local.
 
+The server was started with a **test `.env.local` fixture** so the onboarding path could be
+exercised for real (`ROYALWEB_CREDENTIALS` with one WordPress site, plus SMTP sender variables).
+The database was deleted immediately before the run, so first-run setup and the pre-fill both
+happened during the suite rather than being staged.
+
 **Command**
 
 ```bash
-npm run build && npm start
+npm run build
+ROYALWEB_CREDENTIALS='{"wordpress":{"siteUrl":"http://127.0.0.1:3999","username":"env-seeded-editor","appPassword":"env-app-password"}}' \
+ROYALWEB_SMTP_HOST=127.0.0.1 ROYALWEB_SMTP_PORT=2525 \
+ROYALWEB_SMTP_USER=outreach@royalweb.test ROYALWEB_SMTP_PASS=app-password \
+ROYALWEB_EMAIL_FROM=hello@royalweb.test ROYALWEB_EMAIL_FROM_NAME=ROYALWEB npm start
 TEST_EMAIL=admin@royalweb.local TEST_PASSWORD='Royalweb-Acceptance-2026' npm run acceptance
 ```
 
-**Result: 48 passed · 0 failed · 1 skipped · 49 checks.**
+Without the four `ROYALWEB_*` lines the five onboarding checks (T31a–T35) are reported as
+**skipped**, not as passed.
+
+**Result: 54 passed · 0 failed · 1 skipped · 55 checks.**
 
 Raw output (reproducible with `npm run acceptance`):
 
 ```
 ROYALWEB AUTOPILOT — acceptance suite against http://127.0.0.1:3000
 
-(node) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 · mock WordPress API on 127.0.0.1:3999 · mock SMTP on 127.0.0.1:2525 (test doubles)
 
 ✓ T1a  Health endpoint reports 25 platforms — db=ok
 ✓ T1b  Protected API rejects anonymous access — HTTP 401
-✓ T1c  Admin login with rate limiting + audit — HTTP 200
+✓ T1c  First-run administrator created — admin@royalweb.local
 ✓ T1d  Wrong password rejected — HTTP 401
 ✓ T2   Poster uploaded with dimensions analysed — 1200×1500, 60 KB
 ✓ T3   Original poster preserved byte-for-byte — sha256 e859010cb78d289b…
 ✓ T5   All 25 platforms present — A=10 B=8 C=7
 ✓ T6   Automatic vs manual clearly distinguished — 18 API · 7 manual
-✓ T4   Platform-specific content generated for all 25 (no two identical captions) — 25 drafts · 25 unique · 24 distinct openings · mode=template
+✓ T4   Platform-specific content generated for all 25 (no two identical captions) — 25 drafts · 25 unique · 23 distinct openings · mode=template
 ✓ T7a  Account connection workflow (manual profile) — stored
 ✓ T7b  Invalid credentials rejected before storage — WordPress verification: HTTP 0
 ✓ T7c  WordPress connected via live REST verification — Acceptance Editor
@@ -50,13 +61,13 @@ ROYALWEB AUTOPILOT — acceptance suite against http://127.0.0.1:3000
 ✓ T18  Global pause prevents publishing (job stays scheduled) — status=scheduled · 
 ✓ T13  Dashboard renders with mobile viewport + navigation — HTTP 200
 ✓ T15  No credentials or secret values exposed to the client
-✓ T19  Self-diagnosis runs live checks and scores health — 14 checks · health 100 · 0 issue(s)
-✓ T19b Diagnostics reports the worker heartbeat honestly — 8s since last tick
+✓ T19  Self-diagnosis runs live checks and scores health — 14 checks · health 84 · 2 issue(s)
+✓ T19b Diagnostics reports the worker heartbeat honestly — 2s since last tick
 ✓ T20  Interrupted job is detected and recoverable in one action — 1 released → scheduled
 ✓ T20b Worker tick is idempotent and records a heartbeat — processed=1
 ✓ T21  Assistant explains a real stored failure with recovery steps — duplicate_prevented · 3 steps
 ✓ T21b Assistant does not invent a failure for a platform with no errors — no fabricated diagnosis
-✓ T22  Assistant runs the self-check instead of guessing — health 100, 0 issue(s)
+✓ T22  Assistant runs the self-check instead of guessing — health 84, 2 issue(s)
 ✓ T23  Duplicate fingerprint stays consistent after editing hashtags — 14e51dd353… → 099362afe7…
 ✓ T24  Duplicate guard is real and can be deliberately overridden — first attempt=cancelled · forced=published
 ✓ T25  SMTP configuration is verified with a real handshake — SMTP login succeeded for outreach@royalweb.test at 127.0.0.1:2525.
@@ -67,6 +78,12 @@ ROYALWEB AUTOPILOT — acceptance suite against http://127.0.0.1:3000
 ✓ T28  Opt-out is permanent and enforced before sending — HTTP 409
 ✓ T30  Assistant answers pricing/objection questions from the expert layer — expert
 ✓ T30b Assistant writes a full email draft and never sends it — follow_up · Following up once — Ravi
+✓ T31a .env.local credentials are pre-seeded on first run and marked unverified — WordPress · 127.0.0.1:3999 · unverified
+✓ T31b A pre-seeded account verifies live with no retyping — WordPress → connected
+✓ T32  Encrypted backup export contains no plaintext secret — 3 KB · sealed · ok
+✓ T33  Backup restores a deleted account without claiming it is verified — purged → restored as unverified · 9 secret(s)
+✓ T34  Wrong passphrase and a tampered file are both refused — HTTP 400 bad_passphrase · HTTP 400 bad_passphrase
+✓ T35  Re-running the .env.local pre-fill does not duplicate accounts — 3 account(s) · 0 duplicate(s) · 1 re-applied
 ✓ X1   Private contact details excluded from generated content
 ✓ X2   Analytics reports engagement as unavailable, not zero — Impressions, reach, clicks, likes and views are not exposed by these platform AP
 ✓ X3   Assistant plans without claiming publication — intent=plan, aiUsed=false
@@ -74,7 +91,7 @@ ROYALWEB AUTOPILOT — acceptance suite against http://127.0.0.1:3000
 ✓ X5   Cross-site request without verification header blocked — HTTP 403
 
 ──────────────────────────────────────────────────────────────
-48 passed · 0 failed · 1 skipped · 49 checks
+54 passed · 0 failed · 1 skipped · 55 checks
 
 All checks passed.
 
@@ -138,8 +155,14 @@ compliance guard and suppression list — runs against the real application and 
 | 27 | An unsubscribe is permanent and blocks every future send | T28: after suppression, the same recipient met `HTTP 409` and no message reached the SMTP double |
 | 28 | The assistant is an expert on pricing, positioning and objections | T30: a pricing/objection question routed to the `expert` intent and was answered from `EXPERT_SYSTEM_PROMPT` + `OBJECTION_HANDLING`, not a generic help article |
 | 29 | The assistant can write a full email but can never send one by itself | T30b: returned a `follow_up` draft with the recipient's real name; the response states "Nothing has been sent" and no send endpoint is called |
+| 30 | One encrypted file restores every saved credential | T32: the export was 3 KB, contained `"alg": "aes-256-gcm"` and no plaintext value — a scan for the SMTP password, the account label and the passphrase itself found nothing |
+| 31 | A restore brings accounts back without ever claiming they work | T33: the env-seeded account was purged, the backup re-imported, and it came back as `unverified` with 9 secrets restored — a restore can never prove a token |
+| 32 | A wrong passphrase or an edited file is refused | T34: wrong passphrase → `400 bad_passphrase`; a single flipped character in the ciphertext → `400 bad_passphrase` (GCM rejects it, and the reason is deliberately not distinguished from a wrong passphrase) |
+| 33 | Credentials in `.env.local` are pre-filled on first run | T31a: first-run setup created `WordPress · 127.0.0.1:3999` from `ROYALWEB_CREDENTIALS`, stored encrypted and marked `unverified` |
+| 34 | A pre-filled account works without retyping anything | T31b: a live verification of the seeded account returned `connected` (the credentials came only from the environment) |
+| 35 | Re-running the pre-fill is idempotent | T35: a second `seed-env` run left 3 accounts and 0 duplicates — the existing rows were updated in place |
 | + | Input validation & CSRF | X4: empty campaign name → `400`; X5: PATCH without `x-royalweb-request` → `403` |
-| + | Every dashboard route renders | `/`, `/login`, `/dashboard` and all 13 sub-pages (including `/dashboard/email`) returned `200` with a session, no error boundaries triggered |
+| + | Every dashboard route renders | `/`, `/login`, `/dashboard` and all 16 dashboard sub-routes (including `/dashboard/email` and `/dashboard/settings`) returned `200`; `/dashboard/campaigns` is a detail route (`/dashboard/campaigns/[id]`) and has no index page by design with a session, no error boundaries triggered |
 
 ## Skipped (honest disclosure)
 
@@ -156,6 +179,9 @@ compliance guard and suppression list — runs against the real application and 
   purchased address list exists in the system. To confirm the last mile, put your provider's host,
   port, user and app password in **Settings → Email Outreach → Save & test login** (see
   [EMAIL.md](EMAIL.md)) and send one message to your own address.
+- **Restoring on a different physical machine** — the backup is encrypted with a
+  passphrase-derived key precisely so it can move, and T33 proves a restore in place, but no second
+  host was available here. The KDF/cipher are independent of the server master key by construction.
 - **A live AI provider** — no key was configured, so every draft in this run came from the template
   engine and is labelled `mode:"template"`. The AI path uses the same prompt, the same editorial gate
   and the same opt-out enforcement.

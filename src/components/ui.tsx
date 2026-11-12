@@ -162,6 +162,7 @@ const STATUS_TONES: Record<string, Tone> = {
   skipped: 'neutral',
   not_connected: 'neutral',
   needs_configuration: 'purple',
+  unverified: 'amber',
   manual: 'purple',
   copied: 'blue',
 };

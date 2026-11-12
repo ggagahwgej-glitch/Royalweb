@@ -17,6 +17,7 @@ const schema = z.object({
     'revoke-sessions',
     'reseed-platforms',
     'finalise-campaigns',
+    'verify-accounts',
   ]),
 });
 

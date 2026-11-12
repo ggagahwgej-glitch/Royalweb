@@ -7,6 +7,7 @@ import { getSettings, updateSettings } from '@/lib/settings';
 import { finaliseSettledCampaigns } from '@/lib/publishing/worker';
 import { ffmpegPath } from '@/lib/media/video';
 import { seedPlatforms } from '@/lib/bootstrap';
+import { getAdapter } from '@/lib/platforms';
 import { guideFor, classifyMessage, type GuideAction } from '@/lib/errors/guide';
 
 /**
@@ -50,7 +51,8 @@ export type RepairAction =
   | 'resume-publishing'
   | 'revoke-sessions'
   | 'reseed-platforms'
-  | 'finalise-campaigns';
+  | 'finalise-campaigns'
+  | 'verify-accounts';
 
 export interface DiagnosticsReport {
   status: 'healthy' | 'degraded' | 'critical';
@@ -306,6 +308,38 @@ export async function buildDiagnostics(userId: string): Promise<DiagnosticsRepor
       fix: expiredAccounts.length
         ? { action: 'requeue-expired', label: 'Retry jobs for reconnected accounts', confirm: 'Requeue jobs whose platform now has a working account?' }
         : undefined,
+    });
+  }
+
+  // Accounts that came from .env.local or an encrypted backup: real stored
+  // credentials, but nobody has asked the platform whether they still work.
+  const unverifiedAccounts = accountRows.filter((a) => a.status === 'unverified');
+  if (unverifiedAccounts.length) {
+    addIssue({
+      id: 'unverified-accounts',
+      code: 'unverified_connection',
+      severity: 'warning',
+      title: `${unverifiedAccounts.length} credential set(s) stored but not verified`,
+      meaning:
+        'These accounts were pre-filled from .env.local or restored from an encrypted backup. The credentials are saved and publishing will not use them until the platform confirms them.',
+      why: [
+        'Pre-filled from .env.local during first-run setup',
+        'Restored from an encrypted backup',
+        'A restored token may have been revoked since the backup was taken',
+      ],
+      steps: [
+        'Press "Verify accounts" — the credentials are already stored, nothing needs retyping.',
+        'If one fails, reconnect that platform or correct the value in .env.local and run the pre-fill again.',
+        'A verified account turns green on the Connections page and becomes eligible for publishing.',
+      ],
+      actions: [{ label: 'Connections', href: '/dashboard/accounts' }],
+      subjects: unverifiedAccounts.map((a) => `${a.platform_name} · ${a.account_name}`),
+      count: unverifiedAccounts.length,
+      fix: {
+        action: 'verify-accounts',
+        label: 'Verify accounts',
+        confirm: 'Run a live verification for every unverified account?',
+      },
     });
   }
 
@@ -691,6 +725,61 @@ export async function runRepair(action: RepairAction, userId: string): Promise<R
     case 'finalise-campaigns': {
       const changed = finaliseSettledCampaigns();
       return { action, changed, message: `${changed} campaign(s) moved to their final state.` };
+    }
+    case 'verify-accounts': {
+      const rows = all<{ id: string; platform_id: string; credentials_cipher: string }>(
+        `SELECT id, platform_id, credentials_cipher FROM connected_accounts
+          WHERE user_id = ? AND status = 'unverified'`,
+        userId
+      );
+      let verified = 0;
+      let failed = 0;
+      const failures: string[] = [];
+      for (const row of rows) {
+        const adapter = getAdapter(row.platform_id);
+        if (!adapter) continue;
+        let credentials: Record<string, string> = {};
+        try {
+          credentials = decryptJson<Record<string, string>>(row.credentials_cipher);
+        } catch {
+          failed += 1;
+          failures.push(`${row.platform_id}: stored credentials unreadable`);
+          continue;
+        }
+        const verification = await adapter.verify({ credentials, meta: {} });
+        run(
+          `UPDATE connected_accounts SET status = ?, last_verified_at = ?, last_error = ?,
+             token_expires_at = COALESCE(?, token_expires_at), meta_json = ?, updated_at = ?
+            WHERE id = ?`,
+          verification.ok ? 'connected' : 'error',
+          nowIso(),
+          verification.ok ? null : verification.detail ?? 'Verification failed',
+          verification.expiresAt ?? null,
+          JSON.stringify(verification.meta ?? {}),
+          nowIso(),
+          row.id
+        );
+        run(
+          `UPDATE platforms SET credential_status = ?, last_error = ?, last_error_at = ? WHERE id = ?`,
+          verification.ok ? 'connected' : 'error',
+          verification.ok ? null : verification.detail ?? 'Verification failed',
+          verification.ok ? null : nowIso(),
+          row.platform_id
+        );
+        if (verification.ok) verified += 1;
+        else {
+          failed += 1;
+          failures.push(`${row.platform_id}: ${(verification.detail ?? 'rejected').slice(0, 120)}`);
+        }
+      }
+      if (rows.length === 0) {
+        return { action, changed: 0, message: 'No unverified accounts — nothing to check.' };
+      }
+      return {
+        action,
+        changed: verified + failed,
+        message: `${verified} verified, ${failed} rejected${failures.length ? ` (${failures.join('; ')})` : ''}.`,
+      };
     }
     default:
       throw new Error(`Unknown repair action: ${String(action)}`);

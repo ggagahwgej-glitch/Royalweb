@@ -1,5 +1,5 @@
 import 'server-only';
-import { get, run, nowIso } from '@/lib/db';
+import { all, get, run, nowIso } from '@/lib/db';
 import { encryptJson, decryptJson } from '@/lib/crypto';
 
 /**
@@ -71,16 +71,29 @@ export function getSecret(key: SecretKey | string): string | undefined {
   }
 }
 
-export function setSecret(key: SecretKey | string, value: string, userId?: string) {
+/**
+ * Where a value came from. Shown in the UI so nobody has to guess whether the
+ * running configuration is the one they typed or the one in .env.local.
+ */
+export type SecretSource = 'dashboard' | 'environment' | 'backup';
+
+export function setSecret(
+  key: SecretKey | string,
+  value: string,
+  userId?: string,
+  source: SecretSource = 'dashboard'
+) {
   if (!value) {
     run('DELETE FROM app_secrets WHERE key = ?', key);
     return;
   }
   run(
-    `INSERT INTO app_secrets (key, value_cipher, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET value_cipher = excluded.value_cipher, updated_at = excluded.updated_at`,
+    `INSERT INTO app_secrets (key, value_cipher, source, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value_cipher = excluded.value_cipher, source = excluded.source,
+       updated_at = excluded.updated_at`,
     key,
     encryptJson({ v: value }),
+    source,
     nowIso()
   );
   void userId;
@@ -95,7 +108,51 @@ export function hasEnvSecret(key: string): boolean {
 export function secretStatus(keys: string[]) {
   return keys.map((key) => {
     const fromEnv = hasEnvSecret(key);
-    const stored = Boolean(get('SELECT 1 FROM app_secrets WHERE key = ?', key));
-    return { key, configured: fromEnv || stored, source: fromEnv ? 'environment' : stored ? 'database' : 'none' };
+    const row = get<{ source: string }>('SELECT source FROM app_secrets WHERE key = ?', key);
+    return {
+      key,
+      configured: fromEnv || Boolean(row),
+      // 'environment' wins at runtime, so it is reported first even when a
+      // seeded copy also exists in the database.
+      source: fromEnv ? 'environment' : row?.source === 'environment' ? 'environment-seed' : row ? 'database' : 'none',
+      seeded: row?.source === 'environment',
+      envVar: ENV_MAP[key] ?? null,
+    };
   });
+}
+
+/** Every secret the application knows about. Used by the backup allowlist. */
+export const KNOWN_SECRET_KEYS = Object.keys(ENV_MAP) as string[];
+
+export function envVarFor(key: string): string | undefined {
+  return ENV_MAP[key];
+}
+
+/**
+ * Every secret that is currently resolvable, with the value and where it came
+ * from. This is the only function that returns plaintext secrets and it is used
+ * exclusively by the encrypted-backup exporter.
+ */
+export function exportableSecrets(): { key: string; value: string; source: 'environment' | 'database' }[] {
+  const out: { key: string; value: string; source: 'environment' | 'database' }[] = [];
+  const stored = new Map(
+    all<{ key: string; value_cipher: string }>('SELECT key, value_cipher FROM app_secrets').map((r) => [r.key, r.value_cipher])
+  );
+  for (const key of KNOWN_SECRET_KEYS) {
+    const envName = ENV_MAP[key];
+    const envValue = envName ? process.env[envName] : undefined;
+    if (envValue) {
+      out.push({ key, value: envValue, source: 'environment' });
+      continue;
+    }
+    const cipher = stored.get(key);
+    if (!cipher) continue;
+    try {
+      const value = decryptJson<{ v: string }>(cipher).v;
+      if (value) out.push({ key, value, source: 'database' });
+    } catch {
+      /* unreadable with this master key — skip rather than export garbage */
+    }
+  }
+  return out;
 }

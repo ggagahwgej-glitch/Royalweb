@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, Building2, CheckCircle2, Eye, EyeOff, KeyRound, PlugZap, Save, ShieldCheck, Sparkles } from 'lucide-react';
+import { Bot, Building2, CheckCircle2, DatabaseBackup, Eye, EyeOff, KeyRound, PlugZap, Save, ShieldCheck, Sparkles } from 'lucide-react';
+import { OnboardingBackup } from '@/components/OnboardingBackup';
 import {
   api,
   Badge,
@@ -77,7 +78,7 @@ export function SettingsView() {
   const [secretDraft, setSecretDraft] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [tab, setTab] = useState<'business' | 'publishing' | 'ai' | 'integrations'>('business');
+  const [tab, setTab] = useState<'business' | 'publishing' | 'ai' | 'integrations' | 'backup'>('business');
   const [showKey, setShowKey] = useState(false);
 
   const load = useCallback(async () => {
@@ -203,6 +204,7 @@ export function SettingsView() {
             ['publishing', 'Publishing', ShieldCheck],
             ['ai', 'AI provider', Bot],
             ['integrations', 'Integrations', PlugZap],
+            ['backup', 'Backup & onboarding', DatabaseBackup],
           ] as const
         ).map(([key, label, Icon]) => (
           <button
@@ -538,6 +540,7 @@ export function SettingsView() {
               </Card>
             </>
           ) : null}
+          {tab === 'backup' ? <OnboardingBackup /> : null}
         </div>
 
         <div className="space-y-3">

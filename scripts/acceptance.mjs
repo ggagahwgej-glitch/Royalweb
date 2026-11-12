@@ -450,9 +450,14 @@ async function main() {
     mock.mode = 'ok';
 
     // TEST 17 — disconnect prevents future publishing
+    // Disconnect every account that is actually eligible for publishing. The
+    // env-fixture account is `unverified`, which the engine never uses, so it
+    // must not be mistaken for the working connection.
     const accounts = unwrap(await req('/api/accounts')).accounts;
-    const wpAccount = accounts.find((a) => a.platformId === 'wordpress');
-    await req(`/api/accounts/${wpAccount.id}`, { method: 'DELETE' });
+    const liveWpAccounts = accounts.filter((a) => a.platformId === 'wordpress' && a.status === 'connected');
+    for (const live of liveWpAccounts) {
+      await req(`/api/accounts/${live.id}`, { method: 'DELETE' });
+    }
     const discCampaign = await createCampaign(`Acceptance disconnect ${Date.now()}`, [mediaId]);
     await generate(discCampaign.campaign.id, ['wordpress']);
     await approveAll(discCampaign.campaign.id);
@@ -768,6 +773,118 @@ async function main() {
         : 'fail',
       emailDraft.draft ? `${emailDraft.draft.template} · ${emailDraft.draft.subject.slice(0, 40)}` : 'no draft'
     );
+
+    // TEST 31–35 — onboarding: .env.local pre-fill and encrypted backup/restore
+    // These need the server to have been started with a test environment
+    // (.env.local fixture). Without it they are reported as skipped, never faked.
+    const backupStatus = unwrap(await req('/api/backup'));
+    const envDetected = Boolean(backupStatus.env?.detected);
+
+    if (!envDetected) {
+      record('T31', 'Credentials from .env.local are pre-seeded on first run', 'skip', 'server started without a .env.local fixture');
+      record('T32', 'Encrypted backup export is sealed with the passphrase', 'skip', 'depends on T31');
+      record('T33', 'Backup restores accounts without claiming them verified', 'skip', 'depends on T31');
+      record('T34', 'Wrong passphrase and a tampered file are both refused', 'skip', 'depends on T32');
+      record('T35', 'Re-running the pre-fill does not duplicate accounts', 'skip', 'depends on T31');
+    } else {
+      const accountsNow = unwrap(await req('/api/accounts')).accounts;
+      const seeded = accountsNow.find((a) => a.meta?.seededFrom === 'env.local');
+      record(
+        'T31a',
+        '.env.local credentials are pre-seeded on first run and marked unverified',
+        seeded && seeded.status === 'unverified' ? 'pass' : 'fail',
+        seeded ? `${seeded.platformName} · ${seeded.accountName} · ${seeded.status}` : 'no account carries seededFrom=env.local'
+      );
+
+      let verifiedSeed = null;
+      if (seeded) {
+        verifiedSeed = unwrap(await req(`/api/accounts/${seeded.id}/verify`, { method: 'POST', body: {} }));
+      }
+      record(
+        'T31b',
+        'A pre-seeded account verifies live with no retyping',
+        verifiedSeed?.account?.status === 'connected' ? 'pass' : 'fail',
+        verifiedSeed ? `${verifiedSeed.account.platformName} → ${verifiedSeed.account.status}` : 'no seeded account'
+      );
+
+      const backupPass = 'acceptance-backup-passphrase-2026';
+      const exportRes = await req('/api/backup/export', { method: 'POST', body: { passphrase: backupPass } });
+      const backupText = exportRes.text ?? '';
+      const leaksSecret =
+        backupText.includes('app-password') ||
+        backupText.toLowerCase().includes('acceptance') ||
+        backupText.includes('Royalweb-Acceptance') ||
+        backupText.includes(backupPass);
+      const sealedOk =
+        exportRes.status === 200 &&
+        backupText.includes('"format": "royalweb-autopilot-backup"') &&
+        backupText.includes('"alg": "aes-256-gcm"') &&
+        !leaksSecret;
+      record(
+        'T32',
+        'Encrypted backup export contains no plaintext secret',
+        sealedOk ? 'pass' : 'fail',
+        `${(backupText.length / 1024).toFixed(0)} KB · ${leaksSecret ? 'PLAINTEXT LEAK' : 'sealed'} · ${exportRes.json?.error ?? 'ok'}`
+      );
+
+      let restoreReport = null;
+      let purgedName = '';
+      if (seeded) {
+        purgedName = seeded.accountName;
+        await req(`/api/accounts/${seeded.id}?purge=1`, { method: 'DELETE' });
+        const afterPurge = unwrap(await req('/api/accounts')).accounts;
+        const gone = !afterPurge.some((a) => a.id === seeded.id);
+        const imported = await req('/api/backup/import', {
+          method: 'POST',
+          body: { file: backupText, passphrase: backupPass, mode: 'merge' },
+        });
+        restoreReport = imported.json?.data?.report ?? null;
+        const afterImport = unwrap(await req('/api/accounts')).accounts;
+        const restored = afterImport.find((a) => a.platformId === seeded.platformId && a.accountName === purgedName);
+        record(
+          'T33',
+          'Backup restores a deleted account without claiming it is verified',
+          gone && restored && restored.status === 'unverified' && restoreReport?.secrets?.keys?.length > 0 ? 'pass' : 'fail',
+          restored
+            ? `purged → restored as ${restored.status} · ${restoreReport.secrets.keys.length} secret(s)`
+            : 'account did not come back'
+        );
+      } else {
+        record('T33', 'Backup restores a deleted account without claiming it is verified', 'skip', 'no seeded account to purge');
+      }
+
+      const wrongPass = await req('/api/backup/import', {
+        method: 'POST',
+        body: { file: backupText, passphrase: 'this-is-the-wrong-passphrase', mode: 'merge' },
+      });
+      const tampered = backupText.replace(/"data": "([A-Za-z0-9_-]{4})/, (_m, first) => `"data": "${first === 'AAAA' ? 'BBBB' : 'AAAA'}`);
+      const tamperedRes = await req('/api/backup/import', {
+        method: 'POST',
+        body: { file: tampered, passphrase: backupPass, mode: 'merge' },
+      });
+      record(
+        'T34',
+        'Wrong passphrase and a tampered file are both refused',
+        wrongPass.status === 400 &&
+          wrongPass.json?.code === 'bad_passphrase' &&
+          tamperedRes.status === 400 &&
+          tamperedRes.json?.code === 'bad_passphrase'
+          ? 'pass'
+          : 'fail',
+        `HTTP ${wrongPass.status} ${wrongPass.json?.code ?? ''} · HTTP ${tamperedRes.status} ${tamperedRes.json?.code ?? ''}`
+      );
+
+      const reseed = unwrap(await req('/api/backup/seed-env', { method: 'POST', body: { apply: true } }));
+      const afterReseed = unwrap(await req('/api/accounts')).accounts;
+      const keys = afterReseed.map((a) => `${a.platformId}·${a.accountName}`);
+      const duplicates = keys.length - new Set(keys).size;
+      record(
+        'T35',
+        'Re-running the .env.local pre-fill does not duplicate accounts',
+        duplicates === 0 ? 'pass' : 'fail',
+        `${keys.length} account(s) · ${duplicates} duplicate(s) · ${reseed.report?.accounts?.length ?? 0} re-applied`
+      );
+    }
 
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');
