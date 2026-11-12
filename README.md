@@ -50,6 +50,14 @@ approval requirements and known constraints.
 
 ---
 
+### Onboarding in minutes, not evenings
+
+**Connected Accounts** opens with a quick-connect wizard: a direct *Get key ↗* deep link plus a one-line
+instruction for every one of the 25 platforms, a collapsible paste grid with clipboard buttons, tier filters
+(*Fastest to connect* vs *OAuth / approval* vs *Manual*) and a single **Save & verify all**. Unfilled platforms
+stay quietly inactive — connect two, publish today, add the rest when the APIs are approved. See
+[docs/QUICK_CONNECT.md](docs/QUICK_CONNECT.md).
+
 ### Automation and multi-client workspaces
 
 - **External alerts** (Telegram + alert email + webhook) when the worker dies, a token expires permanently or

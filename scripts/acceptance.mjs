@@ -1239,6 +1239,68 @@ async function main() {
       `switched=${switchedState.activeId === createdSpace.workspace.id} · isolated=${isolated} (${scopedCamps.length} campaigns, ${scopedAccounts.length} accounts) · switched back=${restoredView}`
     );
 
+    // TEST 45–46 — quick-connect wizard: deep links and one-action bulk verify
+    const platformList = unwrap(await req('/api/platforms')).platforms;
+    const missingMeta = platformList.filter(
+      (p) => !p.quickConnect || !/^https:\/\//.test(p.quickConnect.keyUrl) || !p.quickConnect.micro || !p.quickConnect.keyLabel
+    );
+    const tiersOk =
+      platformList.every((p) => ['quick', 'oauth', 'manual'].includes(p.tier)) &&
+      ['telegram', 'wordpress', 'bluesky', 'discord'].every((id) => platformList.find((p) => p.id === id)?.tier === 'quick') &&
+      ['x', 'linkedin'].every((id) => platformList.find((p) => p.id === id)?.tier === 'oauth') &&
+      platformList.find((p) => p.id === 'quora')?.tier === 'manual';
+    record(
+      'T45',
+      'Every platform ships a Get-Key deep link, a one-line instruction and a tier',
+      platformList.length === 25 && missingMeta.length === 0 && tiersOk ? 'pass' : 'fail',
+      `${platformList.length} platforms · missing metadata=${missingMeta.length} · tiers=${tiersOk}`
+    );
+
+    const bulk = unwrap(
+      await req('/api/accounts/bulk', {
+        method: 'POST',
+        body: {
+          entries: [
+            {
+              platformId: 'wordpress',
+              credentials: { siteUrl: `http://127.0.0.1:${MOCK_PORT}`, username: 'acceptance', appPassword: 'app-pass' },
+            },
+            {
+              platformId: 'ghost',
+              credentials: { adminApiUrl: 'http://127.0.0.1:1/ghost/api/admin/', adminApiKey: 'bad:key' },
+            },
+            { platformId: 'devto', credentials: {} },
+          ],
+        },
+      })
+    );
+    const bulkWp = bulk.results.find((r) => r.platformId === 'wordpress');
+    const bulkBad = bulk.results.find((r) => r.platformId === 'ghost');
+    const bulkEmpty = bulk.results.find((r) => r.platformId === 'devto');
+    const dbBulk = new DatabaseSync(DB_PATH);
+    const storedRow = dbBulk
+      .prepare("SELECT credentials_cipher FROM connected_accounts WHERE platform_id = 'wordpress' AND account_name = ?")
+      .get(bulkWp?.accountName ?? '');
+    const unscopedRows = dbBulk
+      .prepare("SELECT COUNT(*) AS c FROM connected_accounts WHERE workspace_id IS NULL")
+      .get();
+    dbBulk.close();
+    const cipher = String(storedRow?.credentials_cipher ?? '');
+    const encrypted = cipher.startsWith('v1.') && !cipher.includes('app-pass');
+    record(
+      'T46',
+      'Bulk paste grid saves and verifies in one action, reporting each failure honestly',
+      bulk.summary.connected === 1 &&
+        bulkWp?.status === 'connected' &&
+        bulkBad?.status === 'failed' &&
+        bulkEmpty?.status === 'skipped' &&
+        encrypted &&
+        Number(unscopedRows?.c ?? 0) === 0
+        ? 'pass'
+        : 'fail',
+      `connected=${bulk.summary.connected} failed=${bulk.summary.failed} skipped=${bulk.summary.skipped} · encrypted=${encrypted} · unscoped rows=${unscopedRows?.c}`
+    );
+
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');
     record('X1', 'Private contact details excluded from generated content', contactHidden ? 'pass' : 'fail');

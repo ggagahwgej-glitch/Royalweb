@@ -2,6 +2,7 @@ import { handler, jsonOk } from '@/lib/api';
 import { all } from '@/lib/db';
 import { ADAPTERS, ADAPTER_MAP } from '@/lib/platforms';
 import { platformOut } from '@/lib/serialize';
+import { quickConnectFor, quickTier, TIER_LABEL } from '@/lib/platforms/quick-connect';
 import { getSecret } from '@/lib/secrets';
 import { ffmpegPath } from '@/lib/media/video';
 
@@ -47,6 +48,12 @@ export const GET = handler(async () => {
             : 'Manual / assisted publishing',
       oauthRequired,
       oauthConfigured,
+      // Quick-connect wizard metadata: where to get the key, what to click, and
+      // which bucket the platform sits in. Derived from the adapter so the wizard
+      // can never claim a platform is "quick" when it needs approval.
+      quickConnect: quickConnectFor(String(row.id)),
+      tier: adapter ? quickTier(adapter) : 'manual',
+      tierLabel: TIER_LABEL[adapter ? quickTier(adapter) : 'manual'],
       manualUrl: adapter?.manualUrl ?? null,
       credentialFields: adapter?.credentialFields ?? [],
       rendererAvailable: adapter?.capabilities.video ? renderer : null,

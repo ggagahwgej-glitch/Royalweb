@@ -22,6 +22,7 @@ import {
   useToast,
 } from '@/components/ui';
 import { PlatformMark } from '@/components/PlatformMark';
+import { QuickConnectWizard } from '@/components/QuickConnectWizard';
 import { relativeTime, formatInZone } from '@/lib/time';
 
 interface CredentialField {
@@ -46,6 +47,9 @@ interface Platform {
   permissionNotes: string;
   notes: string;
   manualUrl: string | null;
+  tier: 'quick' | 'oauth' | 'manual';
+  tierLabel: string;
+  quickConnect: { keyUrl: string; keyLabel: string; micro: string; minutes: number } | null;
 }
 
 interface Account {
@@ -228,6 +232,14 @@ export function AccountsView() {
           </p>
         </div>
       </Card>
+
+      {platforms.length > 0 ? (
+        <QuickConnectWizard
+          platforms={platforms}
+          accounts={accounts ?? []}
+          onConnected={load}
+        />
+      ) : null}
 
       {!accounts ? (
         <div className="py-12"><Spinner label="Loading accounts…" /></div>

@@ -93,6 +93,14 @@ redirect URI `https://YOUR_DOMAIN/api/oauth/<provider>/callback`.
 Non-OAuth platforms (WordPress, Telegram, Discord, Bluesky, Mastodon, DEV.to, Hashnode, Ghost, Flickr,
 Matrix) connect with their own app passwords/tokens in **Connected Accounts → Connect**.
 
+## 7b. Connecting platforms fast
+
+Open **Connected Accounts**. The quick-connect wizard at the top of the page groups the 25 platforms into
+*Fastest to connect*, *OAuth / approval* and *Manual*. Each row has a **Get key ↗** deep link to the page that
+issues the credential, a one-line instruction, a Paste button per field and a single **Save & verify all**
+action for everything you filled in. Empty platforms are simply inactive — no warnings. Full details and the
+bulk API: [QUICK_CONNECT.md](QUICK_CONNECT.md).
+
 ## 8. Public media URLs
 
 Several platforms need a reachable image URL instead of a file upload (Blogger, Ghost cover, DEV.to cover,

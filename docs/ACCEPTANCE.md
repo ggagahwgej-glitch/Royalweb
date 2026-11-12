@@ -199,6 +199,8 @@ compliance guard and suppression list — runs against the real application and 
 | T42 | Warm-up caps the daily sends and refuses the next one | pass — 200, 200, then HTTP 429 `daily_limit` |
 | T43 | IMAP reply detection pauses the follow-up sequence | pass — reply stored, follow-up HTTP 409 `reply_paused` |
 | T44 | Workspaces isolate accounts, campaigns and sender identity | pass — new workspace shows 0 campaigns / 0 accounts, switching back restores the original |
+| T45 | Every platform ships a Get-Key deep link, a one-line instruction and a tier | pass — 25/25 links are `https`, no metadata gaps, tiers match the adapters |
+| T46 | Bulk paste grid saves and verifies in one action | pass — 1 connected, 1 honest failure (unreachable Ghost), 1 skipped, ciphertext encrypted, no unscoped rows |
 
 The suite now starts local doubles for the Telegram Bot API (3998), an RSS feed (3997) and an IMAP server
 (9143) so every outbound call is a real network round trip that the test can inspect. The production
