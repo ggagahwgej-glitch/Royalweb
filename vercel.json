@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "regions": ["bom1"],
+  "crons": [
+    { "path": "/api/worker/tick", "schedule": "*/5 * * * *" },
+    { "path": "/api/alerts/check", "schedule": "*/30 * * * *" }
+  ],
+  "functions": {
+    "src/app/api/worker/tick/route.ts": { "maxDuration": 60 },
+    "src/app/api/alerts/check/route.ts": { "maxDuration": 60 },
+    "src/app/api/campaigns/[id]/schedule/route.ts": { "maxDuration": 120 },
+    "src/app/api/accounts/bulk/route.ts": { "maxDuration": 60 }
+  }
+}

@@ -592,4 +592,22 @@ CREATE INDEX IF NOT EXISTS idx_email_messages_workspace ON email_messages(worksp
     CREATE INDEX IF NOT EXISTS idx_email_replies_created ON email_replies(created_at DESC);
     `,
   },
+  {
+    version: 7,
+    name: 'deployment_indexes',
+    sql: `
+    -- Hot-path indexes for the lists the dashboard loads on every visit and for
+    -- the query the cron-driven worker runs every minute on serverless hosting.
+    CREATE INDEX IF NOT EXISTS idx_contents_campaign ON generated_contents(campaign_id, status);
+    CREATE INDEX IF NOT EXISTS idx_contents_platform ON generated_contents(platform_id);
+    CREATE INDEX IF NOT EXISTS idx_jobs_ready ON publishing_jobs(status, next_attempt_at, scheduled_at);
+    CREATE INDEX IF NOT EXISTS idx_alert_events_created ON alert_events(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_alert_events_code ON alert_events(code, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_replies_workspace ON email_replies(workspace_id, received_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_rss_items_feed ON rss_items(feed_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_send_daily_workspace ON email_send_daily(workspace_id, day);
+    CREATE INDEX IF NOT EXISTS idx_heartbeats_started ON worker_heartbeats(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_snapshots_created ON snapshots(created_at DESC);
+    `,
+  },
 ];

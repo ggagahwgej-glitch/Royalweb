@@ -74,6 +74,15 @@ stay quietly inactive — connect two, publish today, add the rest when the APIs
 
 See [docs/AUTOMATION.md](docs/AUTOMATION.md) for behaviour, limits and API endpoints.
 
+## Deploying
+
+The app needs a **disk** for its SQLite database, uploads and snapshots. That is one command on Docker,
+Railway, Render, Fly.io or any VPS (`Dockerfile`, `railway.json` and `fly.toml` are included). Vercel builds and
+runs too — with cron-driven publishing — but its filesystem is ephemeral, so it is a demo/preview target unless
+you attach durable storage. `/api/health` always reports which mode you are in.
+
+Full instructions, plan limits and a troubleshooting table: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+
 ## Quick start
 
 ```bash

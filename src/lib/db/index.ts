@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { migrations } from './migrations';
+import { dataDir } from '@/lib/runtime';
 
 /**
  * SQLite persistence layer (real on-disk database, WAL mode).
@@ -10,7 +11,10 @@ import { migrations } from './migrations';
  * leak file handles.
  */
 
-const DATA_DIR = process.env.ROYALWEB_DATA_DIR || path.join(process.cwd(), 'data');
+// On a serverless host there is no writable project directory; runtime.ts picks
+// /tmp there and reports the deployment as ephemeral. `ROYALWEB_DB_PATH` still
+// wins for a mounted volume.
+const DATA_DIR = dataDir();
 const DB_PATH = process.env.ROYALWEB_DB_PATH || path.join(DATA_DIR, 'royalweb.db');
 
 declare global {
@@ -23,7 +27,10 @@ declare global {
 function open(): DatabaseSync {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = new DatabaseSync(DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL;');
+  // WAL keeps readers non-blocking; on a single-instance host it is the right
+  // trade-off. On a network volume it would need SQLite's shared-memory files,
+  // so a remote/mounted disk should use DELETE mode (ROYALWEB_SQLITE_JOURNAL).
+  db.exec(`PRAGMA journal_mode = ${process.env.ROYALWEB_SQLITE_JOURNAL === 'delete' ? 'DELETE' : 'WAL'};`);
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA synchronous = NORMAL;');

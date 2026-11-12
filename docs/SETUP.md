@@ -154,6 +154,12 @@ sqlite3 data/royalweb.db ".backup 'backup-$(date +%F).db'"
 tar -czf uploads-$(date +%F).tar.gz data/uploads
 ```
 
+## 11b. Hosting
+
+Two shapes are supported: a disk host (Docker/Railway/Render/Fly/VPS — full functionality, durable SQLite)
+and Vercel (builds and runs, cron-driven publishing, ephemeral data). See [DEPLOY.md](DEPLOY.md) before
+choosing, and check `GET /api/health` afterwards: it reports `runtime.storage` as `persistent` or `ephemeral`.
+
 ## 12. Verifying the deployment
 
 ```bash
