@@ -70,7 +70,7 @@ export function JobsView({
     return () => clearInterval(timer);
   }, [load]);
 
-  async function act(job: Job, action: 'retry' | 'cancel' | 'publish') {
+  async function act(job: Job, action: 'retry' | 'cancel' | 'publish' | 'force') {
     setBusy(`${action}:${job.id}`);
     try {
       const data = await api<{ outcome?: { status: string; message: string } }>(`/api/jobs/${job.id}/action`, {
@@ -209,6 +209,17 @@ export function JobsView({
                             </Button>
                           </>
                         ) : null}
+                        {job.errorCode === 'duplicate_prevented' && job.status !== 'published' ? (
+                          <Button
+                            size="sm"
+                            variant="gold"
+                            loading={busy === `force:${job.id}`}
+                            onClick={() => act(job, 'force')}
+                            icon={<RefreshCw size={11} />}
+                          >
+                            Publish anyway
+                          </Button>
+                        ) : null}
                         {job.status === 'published' ? <Badge tone="green">confirmed</Badge> : null}
                       </div>
                     </td>
@@ -243,6 +254,11 @@ export function JobsView({
                       <div className="mt-2 flex gap-1.5">
                         <Button size="sm" variant="secondary" loading={busy === `retry:${job.id}`} onClick={() => act(job, 'retry')}>Retry</Button>
                         <Button size="sm" variant="ghost" loading={busy === `cancel:${job.id}`} onClick={() => act(job, 'cancel')}>Cancel</Button>
+                        {job.errorCode === 'duplicate_prevented' ? (
+                          <Button size="sm" variant="gold" loading={busy === `force:${job.id}`} onClick={() => act(job, 'force')}>
+                            Publish anyway
+                          </Button>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

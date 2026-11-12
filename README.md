@@ -29,6 +29,7 @@ complete, downloadable publishing package and tracks it as a manual task.
 | Analytics from real records (no fake engagement) | ✅ working |
 | AI assistant that plans but never publishes autonomously | ✅ working |
 | Security center: sessions, audit log, credential health, password rotation | ✅ working |
+| Self-diagnosis + audited repairs (worker, queue, encryption, disk, connections) | ✅ working |
 | YouTube Shorts video rendering | ⚠️ requires `ffmpeg` on the server (Poster→MP4 renderer) |
 
 ### The 25 platforms
@@ -92,7 +93,7 @@ scheduling persistence, pause behaviour, manual packages, error reporting and se
 pass/fail table; anything requiring third-party credentials is reported as *skipped, needs credentials*
 rather than faked.
 
-**Last recorded run:** 31 passed · 0 failed · 1 skipped (32 checks) on Node 22 / Next 15.5.29 — full output,
+**Last recorded run:** 40 passed · 0 failed · 1 skipped (41 checks) on Node 22 / Next 15.5.29 — full output,
 including how each requirement was proven and what was *not* executed, is in
 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
 
@@ -103,7 +104,7 @@ including how each requirement was proven and what was *not* executed, is in
 ```
 src/
   app/
-    login, dashboard/*              14 dashboard sections (server-rendered shells)
+    login, dashboard/*              15 dashboard sections (server-rendered shells)
     api/                            REST surface (auth, media, campaigns, jobs, accounts, oauth…)
   components/                       Design system + interactive views
   lib/
@@ -113,6 +114,8 @@ src/
     platforms/                      25 adapters + shared HTTP/error classification
     ai/                             Provider-agnostic AI layer + template engine
     publishing/                     Job engine + in-process worker
+    diagnostics.ts                  Self-diagnosis + audited repairs
+    errors/guide.ts                 Failure → escape-route catalogue
     settings.ts time.ts validation.ts
   instrumentation.ts                Starts the publishing worker once per server process
 scripts/                            db CLI, standalone worker, acceptance tests
@@ -157,7 +160,9 @@ Nothing can be published without an approved content row and a `connected` accou
 - Contact privacy: email/phone are excluded from all generated content unless you explicitly enable it.
 - Audit trail for every administrative action; publishing log for every adapter call.
 
-See [docs/SECURITY.md](docs/SECURITY.md) for the threat model and operational checklist.
+See [docs/SECURITY.md](docs/SECURITY.md) for the threat model and operational checklist, and
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for the recovery playbook (every failure trap, its cause
+and the exact escape route — including what the app deliberately refuses to bypass).
 
 ---
 
@@ -174,6 +179,9 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the threat model and operational ch
   a poster, or upload an MP4 to the campaign. Without either, the job fails with an explicit message.
 - **Engagement metrics** (impressions, likes, reach) are not returned by these APIs; the analytics screen
   marks them unavailable rather than showing zeros.
+- **No platform-rule bypass.** CAPTCHA/login bypass, proxy rotation, identity spoofing and scraping are not
+  implemented anywhere. When a platform blocks or gates something, ROYALWEB reports it and offers the manual
+  package instead.
 - **Group C platforms** are never automated — no browser automation, no login bypass, no CAPTCHA solving.
 - **Platform marks are not official logos.** Each platform is shown with an original letter mark in its
   brand colour (`PlatformMark.tsx`) to avoid shipping third-party trademark assets; swap in licensed logos

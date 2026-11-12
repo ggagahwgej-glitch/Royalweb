@@ -5,7 +5,7 @@ import { getSettings } from '@/lib/settings';
 import { analyzePoster, generateContent } from '@/lib/ai';
 import { contentOut } from '@/lib/serialize';
 import { absoluteMediaPath } from '@/lib/media/storage';
-import { sha256 } from '@/lib/crypto';
+import { contentFingerprint } from '@/lib/content-hash';
 import { all } from '@/lib/db';
 import fs from 'node:fs';
 import { enforceRateLimit } from '@/lib/rate-limit';
@@ -63,9 +63,13 @@ export const POST = handler(async (_req, ctx, auth) => {
   const generated = outcome.contents[0];
   if (!generated) throw new ApiError(500, 'Generation returned no content', 'generation_failed');
 
-  const hash = sha256(
-    [generated.platform, generated.title, generated.caption, generated.description, generated.hashtags.join(',')].join('|')
-  );
+  const hash = contentFingerprint({
+    platform: generated.platform,
+    title: generated.title,
+    caption: generated.caption,
+    description: generated.description,
+    hashtags: generated.hashtags,
+  });
   run(
     `UPDATE generated_contents SET title = ?, caption = ?, description = ?, hashtags_json = ?, cta = ?,
        destination_url = ?, alt_text = ?, extra_json = ?, status = 'draft', content_hash = ?, generator = ?, model = ?,

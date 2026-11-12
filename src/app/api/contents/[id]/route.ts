@@ -2,7 +2,7 @@ import { handler, jsonOk, ApiError, parseBody, audit } from '@/lib/api';
 import { get, nowIso, run } from '@/lib/db';
 import { contentPatchSchema } from '@/lib/validation';
 import { contentOut } from '@/lib/serialize';
-import { sha256 } from '@/lib/crypto';
+import { contentFingerprint } from '@/lib/content-hash';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,9 +56,24 @@ export const PATCH = handler(async (req, ctx, auth) => {
   const nextTitle = body.title ?? String(row.title ?? '');
   const nextCaption = body.caption ?? String(row.caption ?? '');
   const nextDescription = body.description ?? String(row.description ?? '');
+  const nextHashtags = body.hashtags
+    ? body.hashtags.map((h) => h.replace(/^#/, ''))
+    : (() => {
+        try {
+          return JSON.parse(String(row.hashtags_json ?? '[]')) as string[];
+        } catch {
+          return [];
+        }
+      })();
   sets.push('content_hash = ?', 'updated_at = ?');
   values.push(
-    sha256([row.platform_id, nextTitle, nextCaption, nextDescription].join('|')),
+    contentFingerprint({
+      platform: String(row.platform_id ?? ''),
+      title: nextTitle,
+      caption: nextCaption,
+      description: nextDescription,
+      hashtags: nextHashtags,
+    }),
     nowIso(),
     id
   );

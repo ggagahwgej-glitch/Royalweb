@@ -29,14 +29,76 @@ export function startWorker() {
 export async function tick(source: string) {
   if (globalThis.__royalwebTickBusy) return { skipped: true, source };
   globalThis.__royalwebTickBusy = true;
+  const heartbeatId = newId();
+  run(
+    'INSERT INTO worker_heartbeats (id, source, started_at) VALUES (?, ?, ?)',
+    heartbeatId,
+    source.slice(0, 40),
+    nowIso()
+  );
   try {
     const recurrence = enqueueRecurrences();
     const result = await processDueJobs(3);
     const verified = await verifyStaleAccounts();
-    return { ...result, recurrence, verified, source, at: nowIso() };
+    const finalised = finaliseSettledCampaigns();
+    run(
+      `UPDATE worker_heartbeats SET finished_at = ?, processed = ?, recovered = ?, recurrence = ?
+        WHERE id = ?`,
+      nowIso(),
+      result.processed,
+      result.recovered,
+      recurrence,
+      heartbeatId
+    );
+    // Keep the table small — it is a liveness signal, not an audit log.
+    run(
+      `DELETE FROM worker_heartbeats WHERE id NOT IN
+         (SELECT id FROM worker_heartbeats ORDER BY started_at DESC LIMIT 200)`
+    );
+    return { ...result, recurrence, verified, finalised, source, at: nowIso() };
+  } catch (err) {
+    run(
+      'UPDATE worker_heartbeats SET finished_at = ?, error = ? WHERE id = ?',
+      nowIso(),
+      String((err as Error).message ?? err).slice(0, 500),
+      heartbeatId
+    );
+    throw err;
   } finally {
     globalThis.__royalwebTickBusy = false;
   }
+}
+
+/**
+ * Campaigns can be left in `scheduled`/`publishing` when every job ended in a
+ * terminal state other than success (permission errors, expired connections,
+ * duplicates). Without this sweep they look "in progress" forever.
+ */
+export function finaliseSettledCampaigns(): number {
+  const stuck = all<{ id: string }>(
+    `SELECT c.id FROM campaigns c
+      WHERE c.status IN ('scheduled','publishing')
+        AND EXISTS (SELECT 1 FROM publishing_jobs j WHERE j.campaign_id = c.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM publishing_jobs j WHERE j.campaign_id = c.id
+            AND j.status IN ('scheduled','processing','waiting_approval','manual_required')
+        )`
+  );
+  let changed = 0;
+  for (const campaign of stuck) {
+    const published = get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM publishing_jobs WHERE campaign_id = ? AND status = 'published'",
+      campaign.id
+    );
+    run(
+      'UPDATE campaigns SET status = ?, updated_at = ? WHERE id = ?',
+      Number(published?.c || 0) > 0 ? 'completed' : 'failed',
+      nowIso(),
+      campaign.id
+    );
+    changed += 1;
+  }
+  return changed;
 }
 
 /**

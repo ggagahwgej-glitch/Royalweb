@@ -333,4 +333,21 @@ export const migrations: Migration[] = [
     CREATE INDEX IF NOT EXISTS idx_campaigns_recurrence ON campaigns(recurrence, next_recurrence_at);
     `,
   },
+  {
+    version: 3,
+    name: 'worker_heartbeats',
+    sql: `
+    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+      id          TEXT PRIMARY KEY,
+      source      TEXT NOT NULL,
+      started_at  TEXT NOT NULL,
+      finished_at TEXT,
+      processed   INTEGER NOT NULL DEFAULT 0,
+      recovered   INTEGER NOT NULL DEFAULT 0,
+      recurrence  INTEGER NOT NULL DEFAULT 0,
+      error       TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_worker_heartbeats_started ON worker_heartbeats(started_at DESC);
+    `,
+  },
 ];

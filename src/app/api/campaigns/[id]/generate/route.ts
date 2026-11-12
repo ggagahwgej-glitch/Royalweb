@@ -5,7 +5,7 @@ import { getSettings } from '@/lib/settings';
 import { analyzePoster, generateContent } from '@/lib/ai';
 import { contentOut } from '@/lib/serialize';
 import { absoluteMediaPath } from '@/lib/media/storage';
-import { sha256 } from '@/lib/crypto';
+import { contentFingerprint } from '@/lib/content-hash';
 import fs from 'node:fs';
 import { z } from 'zod';
 import { enforceRateLimit } from '@/lib/rate-limit';
@@ -81,9 +81,13 @@ export const POST = handler(async (req, ctx, auth) => {
     for (const content of outcome.contents) {
       const adapter = getAdapter(content.platform);
       if (!adapter) continue;
-      const hash = sha256(
-        [content.platform, content.title, content.caption, content.description, content.hashtags.join(',')].join('|')
-      );
+      const hash = contentFingerprint({
+        platform: content.platform,
+        title: content.title,
+        caption: content.caption,
+        description: content.description,
+        hashtags: content.hashtags,
+      });
       const existing = get<{ id: string; status: string }>(
         'SELECT id, status FROM generated_contents WHERE campaign_id = ? AND platform_id = ?',
         id,

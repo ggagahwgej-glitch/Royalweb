@@ -116,11 +116,51 @@ export const POST = handler(async (req, ctx, auth) => {
       const error = account
         ? null
         : `No ${adapter.name} account is connected. Connect one to publish automatically, or use the manual package.`;
+
+      // The idempotency key is unique, so a previously cancelled/failed job for
+      // the same slot used to swallow the insert silently while the UI still
+      // reported "scheduled". Reuse that row instead and report the real state.
+      const sameSlot = get<{ id: string; status: string }>(
+        'SELECT id, status FROM publishing_jobs WHERE idempotency_key = ?',
+        idempotencyKey
+      );
+      if (sameSlot) {
+        if (['cancelled', 'failed', 'connection_expired', 'manual_required'].includes(sameSlot.status)) {
+          run(
+            `UPDATE publishing_jobs SET status = ?, account_id = ?, content_id = ?, scheduled_at = ?,
+               attempts = 0, next_attempt_at = NULL, error = ?, error_code = ?, retryable = ?, updated_at = ?
+             WHERE id = ?`,
+            status,
+            account?.id ?? null,
+            content.id,
+            scheduledAt,
+            error,
+            account ? null : 'no_account',
+            account ? 1 : 0,
+            nowIso(),
+            sameSlot.id
+          );
+          scheduleResults.push({
+            platformId,
+            kind: 'job',
+            status,
+            message: error ?? `Reused the ${sameSlot.status.replace(/_/g, ' ')} job for this slot.`,
+          });
+        } else {
+          scheduleResults.push({
+            platformId,
+            kind: 'job',
+            status: sameSlot.status,
+            message: `A ${sameSlot.status.replace(/_/g, ' ')} job already exists for this exact slot.`,
+          });
+        }
+        continue;
+      }
+
       run(
         `INSERT INTO publishing_jobs (id, campaign_id, platform_id, account_id, media_id, content_id, scheduled_at,
            status, attempts, max_attempts, idempotency_key, error, error_code, retryable, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 0, 3, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(idempotency_key) DO NOTHING`,
+         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 0, 3, ?, ?, ?, ?, ?, ?)`,
         newId(),
         id,
         platformId,

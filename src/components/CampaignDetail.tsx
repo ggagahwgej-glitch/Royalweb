@@ -608,6 +608,16 @@ export function CampaignDetail({ campaignId }: { campaignId: string }) {
                                   Cancel
                                 </Button>
                               ) : null}
+                              {job.errorCode === 'duplicate_prevented' ? (
+                                <Button
+                                  size="sm"
+                                  variant="gold"
+                                  loading={busy === `force:${job.id}`}
+                                  onClick={() => act(`force:${job.id}`, () => api(`/api/jobs/${job.id}/action`, { method: 'POST', body: { action: 'force' } }), 'Publishing again (duplicate override)')}
+                                >
+                                  Publish anyway
+                                </Button>
+                              ) : null}
                             </div>
                           ) : (
                             <span className="text-[10.5px] text-ok">done</span>

@@ -513,10 +513,14 @@ export async function publishJob(
   }
 
   log(claimed, 'error', 'publish', `Permanent failure: ${message}`);
-  return finish(authError ? 'connection_expired' : 'failed', message, {
+  const failed = finish(authError ? 'connection_expired' : 'failed', message, {
     errorCode,
     retryable: false,
   });
+  // Do not leave the campaign stuck in "publishing" when nothing else is left
+  // to run — the dashboard would otherwise show progress that will never move.
+  finaliseCampaign(claimed.campaign_id);
+  return failed;
 }
 
 function finaliseCampaign(campaignId: string) {

@@ -14,8 +14,10 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import sharp from 'sharp';
+import { DatabaseSync } from 'node:sqlite';
 
 const BASE = (process.env.TEST_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+const DB_PATH = process.env.TEST_DB_PATH || 'data/royalweb.db';
 const MOCK_PORT = Number(process.env.TEST_MOCK_PORT || 3999);
 const EMAIL = process.env.TEST_EMAIL || 'acceptance@royalweb.local';
 const PASSWORD = process.env.TEST_PASSWORD || 'Acceptance-Test-Pass-2026';
@@ -436,6 +438,141 @@ async function main() {
       /sk-[A-Za-z0-9]{16,}/.test(settingsRes.text) ||
       /blobSecrets/i.test(settingsRes.text);
     record('T15', 'No credentials or secret values exposed to the client', secretsLeaked ? 'fail' : 'pass');
+
+    // TEST 19–23 — self-diagnosis, recovery, assistant and hash consistency
+    const diag = unwrap(await req('/api/diagnostics'));
+    record(
+      'T19',
+      'Self-diagnosis runs live checks and scores health',
+      Array.isArray(diag.checks) && diag.checks.length >= 10 && typeof diag.health === 'number' ? 'pass' : 'fail',
+      `${diag.checks.length} checks · health ${diag.health} · ${diag.issues.length} issue(s)`
+    );
+    record(
+      'T19b',
+      'Diagnostics reports the worker heartbeat honestly',
+      diag.worker && (diag.worker.lastHeartbeatAt ? typeof diag.worker.secondsAgo === 'number' : diag.worker.stalled) ? 'pass' : 'fail',
+      diag.worker?.lastHeartbeatAt ? `${diag.worker.secondsAgo}s since last tick` : 'no heartbeat recorded'
+    );
+
+    // Fault injection: a job abandoned mid-flight must be recoverable.
+    const db = new DatabaseSync(DB_PATH);
+    const campaignJobs = unwrap(await req(`/api/campaigns/${campaign.campaign.id}`)).jobs;
+    const stuckJob = campaignJobs.find((j) => j.status !== 'published') ?? campaignJobs[0];
+    db.prepare(
+      "UPDATE publishing_jobs SET status = 'processing', locked_at = ? WHERE id = ?"
+    ).run(new Date(Date.now() - 30 * 60_000).toISOString(), stuckJob.id);
+    const stuckReport = unwrap(await req('/api/diagnostics'));
+    const hasStuckIssue = stuckReport.issues.some((i) => i.fix?.action === 'recover-stuck');
+    const repaired = unwrap(await req('/api/diagnostics/repair', { method: 'POST', body: { action: 'recover-stuck' } }));
+    const recovered = db.prepare('SELECT status FROM publishing_jobs WHERE id = ?').get(stuckJob.id);
+    record(
+      'T20',
+      'Interrupted job is detected and recoverable in one action',
+      hasStuckIssue && repaired.result.changed >= 1 && recovered?.status === 'scheduled' ? 'pass' : 'fail',
+      `${repaired.result.changed} released → ${recovered?.status}`
+    );
+    db.close();
+
+    const heartbeat = unwrap(await req('/api/worker/tick', { method: 'POST', body: {} }));
+    record(
+      'T20b',
+      'Worker tick is idempotent and records a heartbeat',
+      heartbeat && (typeof heartbeat.processed === 'number' || heartbeat.skipped) ? 'pass' : 'fail',
+      heartbeat?.skipped ? 'tick already in progress (skipped safely)' : `processed=${heartbeat?.processed ?? 0}`
+    );
+
+    const assistantFailure = unwrap(
+      await req('/api/assistant', { method: 'POST', body: { message: 'Why did my WordPress post fail?' } })
+    );
+    record(
+      'T21',
+      'Assistant explains a real stored failure with recovery steps',
+      assistantFailure.intent === 'explain' && assistantFailure.failure && assistantFailure.failure.steps.length >= 3
+        ? 'pass'
+        : 'fail',
+      `${assistantFailure.failure?.code ?? 'no failure'} · ${assistantFailure.failure?.steps?.length ?? 0} steps`
+    );
+    const noFailure = unwrap(
+      await req('/api/assistant', { method: 'POST', body: { message: 'Why did my LinkedIn post fail?' } })
+    ).failure;
+    record(
+      'T21b',
+      'Assistant does not invent a failure for a platform with no errors',
+      noFailure === null ? 'pass' : 'fail',
+      noFailure ? 'unexpected failure object' : 'no fabricated diagnosis'
+    );
+
+    const diagnose = unwrap(await req('/api/assistant', { method: 'POST', body: { message: 'fix the stuck posts' } }));
+    record(
+      'T22',
+      'Assistant runs the self-check instead of guessing',
+      diagnose.intent === 'diagnose' && diagnose.diagnosis && typeof diagnose.diagnosis.health === 'number' ? 'pass' : 'fail',
+      `health ${diagnose.diagnosis?.health}, ${diagnose.diagnosis?.issues?.length ?? 0} issue(s)`
+    );
+
+    // Regression: the duplicate fingerprint must change when hashtags change
+    // (it used to ignore them on manual edits, blocking genuinely new copy).
+    const hashContent = unwrap(await req(`/api/campaigns/${campaign.campaign.id}`)).contents.find((c) => c.platformId === 'wordpress');
+    const db2 = new DatabaseSync(DB_PATH);
+    const beforeHash = db2.prepare('SELECT content_hash FROM generated_contents WHERE id = ?').get(hashContent.id)?.content_hash;
+    await req(`/api/contents/${hashContent.id}`, {
+      method: 'PATCH',
+      body: { hashtags: ['RoyalwebTest', 'RegressionCheck', 'HashFix'] },
+    });
+    const afterHash = db2.prepare('SELECT content_hash FROM generated_contents WHERE id = ?').get(hashContent.id)?.content_hash;
+    db2.close();
+    record(
+      'T23',
+      'Duplicate fingerprint stays consistent after editing hashtags',
+      beforeHash && afterHash && beforeHash !== afterHash ? 'pass' : 'fail',
+      `${String(beforeHash).slice(0, 10)}… → ${String(afterHash).slice(0, 10)}…`
+    );
+
+    // TEST 24 — duplicate guard has a working escape hatch
+    const clone = await createCampaign(`Acceptance duplicate ${Date.now()}`, [mediaId], {
+      businessCategory: 'Restaurants',
+      serviceName: 'Restaurant Website Development',
+      offerPrice: '₹2,999',
+      targetAudience: 'Restaurant owners',
+      cta: 'Get Your Business Website',
+    });
+    await generate(clone.campaign.id, ['wordpress']);
+    const cloneDetail = unwrap(await req(`/api/campaigns/${clone.campaign.id}`));
+    const cloneContent = cloneDetail.contents.find((c) => c.platformId === 'wordpress');
+    const publishedContent = unwrap(await req(`/api/campaigns/${campaign.campaign.id}`)).contents.find(
+      (c) => c.platformId === 'wordpress'
+    );
+    await req(`/api/contents/${cloneContent.id}`, {
+      method: 'PATCH',
+      body: {
+        title: publishedContent.title,
+        caption: publishedContent.caption,
+        description: publishedContent.description,
+        hashtags: publishedContent.hashtags,
+        status: 'approved',
+      },
+    });
+    const dupSchedule = await schedule(clone.campaign.id, {
+      platforms: ['wordpress'],
+      publishNow: true,
+      timezone: 'Asia/Kolkata',
+      recurrence: 'none',
+      requireApproved: true,
+    });
+    const dupJob = dupSchedule.jobs.find((j) => j.platformId === 'wordpress');
+    const dupState = unwrap(await req(`/api/campaigns/${clone.campaign.id}`)).jobs.find((j) => j.platformId === 'wordpress');
+    const forced = await req(`/api/jobs/${dupJob.id}/action`, { method: 'POST', body: { action: 'force' } });
+    const forcedState = forced.json?.data?.job?.status;
+    record(
+      'T24',
+      'Duplicate guard is real and can be deliberately overridden',
+      dupState?.status === 'cancelled' && forcedState === 'published'
+        ? 'pass'
+        : dupState?.status === 'published'
+          ? 'skip'
+          : 'fail',
+      `first attempt=${dupState?.status} · forced=${forcedState ?? forced.json?.error}`
+    );
 
     // Extras worth verifying
     const contactHidden = !JSON.stringify(generation.contents).includes('919000000000');

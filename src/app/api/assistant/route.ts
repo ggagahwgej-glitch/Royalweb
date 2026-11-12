@@ -2,6 +2,8 @@ import { handler, jsonOk, parseBody } from '@/lib/api';
 import { all, get, newId, nowIso, run } from '@/lib/db';
 import { getSettings } from '@/lib/settings';
 import { resolveProvider } from '@/lib/ai/providers';
+import { buildDiagnostics } from '@/lib/diagnostics';
+import { classifyMessage, guideFor, type ErrorGuide } from '@/lib/errors/guide';
 import { nextMorningSlot, formatInZone } from '@/lib/time';
 import { z } from 'zod';
 
@@ -20,17 +22,67 @@ interface PlanItem {
   note: string;
 }
 
-/**
- * ROYALWEB AI ASSISTANT.
- *
- * It prepares plans and content, but it never publishes and never claims a
- * post went live. Any plan must be approved in the campaign screen, which is
- * the only code path that can create publishing jobs.
- */
+type Intent = 'plan' | 'pause' | 'status' | 'diagnose' | 'explain' | 'howto' | 'help';
+
+const PLATFORM_ALIASES: Record<string, string[]> = {
+  wordpress: ['wordpress', 'wp'],
+  blogger: ['blogger', 'blogspot'],
+  telegram: ['telegram'],
+  discord: ['discord'],
+  bluesky: ['bluesky', 'bsky'],
+  mastodon: ['mastodon'],
+  tumblr: ['tumblr'],
+  devto: ['dev.to', 'devto', 'forem'],
+  hashnode: ['hashnode'],
+  ghost: ['ghost'],
+  pinterest: ['pinterest'],
+  linkedin: ['linkedin'],
+  googlebusiness: ['google business', 'google my business', 'gbp'],
+  x: ['twitter', ' x ', 'x/twitter', ' tweet'],
+  flickr: ['flickr'],
+  youtube: ['youtube', 'shorts'],
+  slack: ['slack'],
+  matrix: ['matrix'],
+  behance: ['behance'],
+  dribbble: ['dribbble'],
+  quora: ['quora'],
+  reddit: ['reddit'],
+  indiamart: ['indiamart'],
+  justdial: ['justdial'],
+  goodfirms: ['goodfirms'],
+};
+
+function detectPlatform(lower: string, platforms: { id: string; name: string }[]): string | null {
+  for (const platform of platforms) {
+    const aliases = PLATFORM_ALIASES[platform.id] ?? [platform.id];
+    if (aliases.some((alias) => lower.includes(alias))) return platform.id;
+  }
+  return null;
+}
+
+function detectIntent(lower: string): Intent {
+  if (/(fix|repair|recover|unstick|stuck|not working|broken|diagnos|self.?check|health|why (is|isn.t) (it|this) working|nothing (is )?publish)/.test(lower)) {
+    return 'diagnose';
+  }
+  if (/(why|explain|what happened|what does|error|fail|expired|rejected|refused|429|401|403|500|duplicate)/.test(lower)) {
+    return 'explain';
+  }
+  if (/(pause|stop publishing|halt)/.test(lower)) return 'pause';
+  if (/(how do i|how to|how can i|teach|guide|walk me|steps|what should i do|help me understand)/.test(lower)) {
+    return 'howto';
+  }
+  if (/(status|report|summary|what.s going on|overview)/.test(lower)) return 'status';
+  if (/(upload|poster|schedule|plan|publish|tomorrow|today|all platforms|campaign|hashtag|caption|seo)/.test(lower)) {
+    return 'plan';
+  }
+  return 'help';
+}
+
 export const POST = handler(async (req, _ctx, auth) => {
   const { message } = await parseBody(req, schema);
   const settings = getSettings(auth.user.id);
-  const lower = message.toLowerCase();
+  const lower = ` ${message.toLowerCase()} `;
+  const intent = detectIntent(lower);
 
   const platforms = all<{
     id: string;
@@ -46,12 +98,7 @@ export const POST = handler(async (req, _ctx, auth) => {
     auth.user.id
   );
 
-  const campaign = get<{
-    id: string;
-    name: string;
-    status: string;
-    media_count: number;
-  }>(
+  const campaign = get<{ id: string; name: string; status: string; media_count: number }>(
     `SELECT c.id, c.name, c.status,
        (SELECT COUNT(*) FROM media_assets m WHERE m.campaign_id = c.id AND m.deleted_at IS NULL) AS media_count
      FROM campaigns c WHERE c.user_id = ? ORDER BY c.created_at DESC LIMIT 1`,
@@ -65,24 +112,22 @@ export const POST = handler(async (req, _ctx, auth) => {
       )
     : [];
 
-  const planPlatforms = platforms;
-  const items: PlanItem[] = planPlatforms.map((p) => {
+  const items: PlanItem[] = platforms.map((p) => {
     const connection: PlanItem['connection'] =
       p.automation === 'manual' ? 'manual' : p.accounts > 0 ? 'connected' : 'not_connected';
-    const contentStatus = contents.find((c) => c.platform_id === p.id)?.status ?? null;
     return {
       platformId: p.id,
       platformName: p.name,
       automation: p.automation,
       connection,
       willPublishAutomatically: p.automation !== 'manual' && p.accounts > 0,
-      contentStatus,
+      contentStatus: contents.find((c) => c.platform_id === p.id)?.status ?? null,
       note:
         p.automation === 'manual'
           ? 'Manual package — ROYALWEB prepares the caption and image for you to publish.'
           : p.accounts > 0
-            ? 'Will publish through the official API.'
-            : 'No connected account yet — connect one, or use the manual package.',
+            ? 'Will publish through the official API once content is approved.'
+            : 'No connected account yet — connect one, or publish with the manual package.',
     };
   });
 
@@ -91,34 +136,152 @@ export const POST = handler(async (req, _ctx, auth) => {
   const manual = items.filter((i) => i.connection === 'manual');
   const suggestedTime = nextMorningSlot(settings.defaultTimezone);
 
-  let intent: 'plan' | 'pause' | 'status' | 'help' = 'help';
-  if (/(pause|stop|halt)/.test(lower)) intent = 'pause';
-  else if (/(status|what happened|failed|error|result)/.test(lower)) intent = 'status';
-  else if (/(upload|poster|schedule|plan|publish|tomorrow|today|all platforms|campaign)/.test(lower)) intent = 'plan';
-
-  const failedJobs = all<{ platform: string; error: string }>(
-    `SELECT p.name AS platform, j.error FROM publishing_jobs j
-       JOIN campaigns c ON c.id = j.campaign_id JOIN platforms p ON p.id = j.platform_id
-      WHERE c.user_id = ? AND j.status IN ('failed','connection_expired') AND j.error IS NOT NULL
-      ORDER BY j.updated_at DESC LIMIT 5`,
+  // ── real failure data (never invented) ────────────────────────────────────
+  const failedJobs = all<{
+    id: string;
+    status: string;
+    error: string | null;
+    error_code: string | null;
+    platform_id: string;
+    platform_name: string;
+    campaign_id: string;
+    campaign_name: string;
+    updated_at: string;
+  }>(
+    `SELECT j.id, j.status, j.error, j.error_code, j.platform_id, p.name AS platform_name,
+            c.id AS campaign_id, c.name AS campaign_name, j.updated_at
+       FROM publishing_jobs j JOIN campaigns c ON c.id = j.campaign_id JOIN platforms p ON p.id = j.platform_id
+      WHERE c.user_id = ? AND j.status IN ('failed','connection_expired','cancelled','manual_required')
+        AND (j.error IS NOT NULL OR j.error_code IS NOT NULL)
+      ORDER BY j.updated_at DESC LIMIT 20`,
     auth.user.id
   );
 
-  let reply: string;
-  if (intent === 'pause') {
-    reply = `Publishing can be paused globally or per campaign.\n\n• Global pause stops the worker from publishing anything: Settings → Publishing. (Current state: ${settings.globalPause ? 'paused' : 'active'}.)\n• Per campaign: open the campaign and press Pause.\n\nI will not pause anything without you confirming it. Use the button below if you want the global pause switched on.`;
+  const mentionedPlatform = detectPlatform(lower, platforms);
+  const relevantFailure = mentionedPlatform
+    ? failedJobs.find((j) => j.platform_id === mentionedPlatform)
+    : failedJobs.find((j) => j.status === 'failed' || j.status === 'connection_expired');
+
+  const failureCode = relevantFailure
+    ? relevantFailure.error_code || classifyMessage(relevantFailure.error ?? '')
+    : null;
+  const failureGuide: ErrorGuide | null = failureCode ? guideFor(failureCode) : null;
+
+  // ── diagnostics for the "fix it" intents ──────────────────────────────────
+  const wantsDiagnosis = intent === 'diagnose' || intent === 'howto';
+  const diagnostics = wantsDiagnosis ? await buildDiagnostics(auth.user.id) : null;
+
+  const suggestedActions: { id: string; label: string; href?: string; repair?: string }[] = [];
+  let reply = '';
+
+  if (intent === 'diagnose' && diagnostics) {
+    const top = diagnostics.issues.slice(0, 3);
+    reply = [
+      `I ran a self-check just now: health ${diagnostics.health}/100 (${diagnostics.status}).`,
+      diagnostics.worker.lastHeartbeatAt
+        ? `Last worker tick: ${diagnostics.worker.secondsAgo}s ago.`
+        : 'The worker has never recorded a heartbeat — scheduled jobs will not run.',
+      top.length
+        ? `\nWhat needs attention:\n${top
+            .map((issue, i) => `${i + 1}. ${issue.title}\n   Why: ${issue.why[0] ?? 'see the guide'}\n   First step: ${issue.steps[0]}`)
+            .join('\n')}`
+        : '\nDatabase, encryption, worker, queue, connections, storage and sessions all pass their checks.',
+      '\nRecovery actions (each requires your confirmation, none of them publishes new content):',
+      '• Run worker tick — drains jobs that are already approved, scheduled and due.',
+      '• Release interrupted jobs — unlocks jobs that died mid-publish.',
+      '• Retry retryable failures — gives permanent failures one more honest attempt.',
+      '• Resume publishing — clears a global pause.',
+      '\nOpen Diagnostics to execute them with a before/after report.',
+    ].join('\n');
+    suggestedActions.push({ id: 'open-diagnostics', label: 'Open diagnostics', href: '/dashboard/diagnostics' });
+    if (diagnostics.worker.stalled) suggestedActions.push({ id: 'run-tick', label: 'Run worker tick', repair: 'run-tick' });
+    if (settings.globalPause) suggestedActions.push({ id: 'resume', label: 'Resume publishing', repair: 'resume-publishing' });
+    if (failedJobs.length) suggestedActions.push({ id: 'open-failed', label: 'Review failed posts', href: '/dashboard/failed' });
+  } else if (intent === 'explain' && relevantFailure && failureGuide) {
+    reply = [
+      `I found a real record: ${relevantFailure.platform_name} · “${relevantFailure.campaign_name}” is ${relevantFailure.status.replace(/_/g, ' ')} (${relevantFailure.error_code ?? failureCode}).`,
+      '',
+      failureGuide.title,
+      failureGuide.meaning,
+      '',
+      'Platform message:',
+      `“${(relevantFailure.error ?? 'no message stored').slice(0, 400)}”`,
+      '',
+      'Why this happens:',
+      ...failureGuide.why.map((w) => `• ${w}`),
+      '',
+      'How to escape it:',
+      ...failureGuide.steps.map((s, i) => `${i + 1}. ${s}`),
+      '',
+      `Do not: ${failureGuide.avoid}`,
+    ].join('\n');
+    for (const action of failureGuide.actions) {
+      suggestedActions.push({
+        id: `guide-${action.label.toLowerCase().replace(/[^a-z]+/g, '-')}`,
+        label: action.label,
+        href: action.href,
+        repair: action.repair,
+      });
+    }
+    suggestedActions.push({ id: 'open-failed', label: 'Open failed posts', href: '/dashboard/failed' });
+  } else if (intent === 'explain') {
+    reply = [
+      'I have no failure recorded for that, so I will not invent one.',
+      `Right now: ${failedJobs.length} job(s) with a stored error, ${connected.length} connected platform(s), ${notConnected.length} waiting for a connection.`,
+      '',
+      'If a post is missing from a platform, check Failed Posts first — the platform’s own message is stored there.',
+      'If a scheduled post never fired at all, that is a worker problem rather than a platform problem: run Diagnostics.',
+    ].join('\n');
+    suggestedActions.push({ id: 'open-failed', label: 'Failed posts', href: '/dashboard/failed' });
+    suggestedActions.push({ id: 'open-diagnostics', label: 'Run diagnostics', href: '/dashboard/diagnostics' });
+  } else if (intent === 'howto' && diagnostics) {
+    const issue = diagnostics.issues[0];
+    const guide = issue ? guideFor(issue.code) : null;
+    reply = [
+      'Here is the repeatable recovery method I use, regardless of platform:',
+      '1. Read the stored error — never guess. Failed Posts and Security → Publishing log hold the platform’s own words.',
+      '2. Classify it: auth (reconnect), permission (role/scope), rate (wait), content (edit), network (host/firewall), duplicate (edit or force).',
+      '3. Fix the cause before retrying. Retrying an unfixed cause only burns quota.',
+      '4. Retry from the job, not by scheduling a new post — the existing job keeps the idempotency key, so nothing can double-publish.',
+      '5. Verify on the platform itself. ROYALWEB only marks a job published when the API returns an ID or URL.',
+      '',
+      issue
+        ? `Your current top issue is: ${issue.title}\nFirst step: ${issue.steps[0]}`
+        : 'There is no active issue right now. The same method applies when one appears.',
+      guide ? `\nRule for this class of failure: ${guide.avoid}` : '',
+      '',
+      'Deliberate limits: I will not bypass platform approvals, paid tiers, CAPTCHAs, rate limits or logins. Those are the platform’s rules, not a bug to work around.',
+    ].join('\n');
+    suggestedActions.push({ id: 'open-diagnostics', label: 'Diagnostics', href: '/dashboard/diagnostics' });
+    suggestedActions.push({ id: 'open-failed', label: 'Failed posts', href: '/dashboard/failed' });
+  } else if (intent === 'pause') {
+    reply = [
+      'Publishing can be paused globally or per campaign.',
+      `• Global pause stops the worker from publishing anything (current state: ${settings.globalPause ? 'paused' : 'active'}).`,
+      '• Per campaign: open the campaign and press Pause — its jobs stay scheduled, not cancelled.',
+      '',
+      'I will never switch this without your confirmation. Use the button below to toggle it.',
+    ].join('\n');
+    suggestedActions.push({
+      id: 'global-pause',
+      label: settings.globalPause ? 'Resume publishing' : 'Pause publishing',
+    });
   } else if (intent === 'status') {
     const total = get<{ c: number }>('SELECT COUNT(*) AS c FROM campaigns WHERE user_id = ?', auth.user.id)?.c ?? 0;
+    const counts = diagnostics?.counts;
     reply = [
-      `Here is the current picture from the database:`,
+      'Here is the current picture straight from the database:',
       `• Campaigns: ${total}`,
       `• Connected platforms: ${connected.length} of ${items.length}`,
-      `• Awaiting manual publishing: ${manual.length} platform(s) supported`,
-      failedJobs.length
-        ? `\nRecent publishing errors:\n${failedJobs.map((f) => `• ${f.platform}: ${f.error?.slice(0, 160)}`).join('\n')}`
+      counts ? `• Pending jobs: ${counts.pendingJobs} · failed: ${counts.failedJobs} · manual pending: ${counts.manualPending}` : '',
+      failureGuide && relevantFailure
+        ? `\nMost recent error: ${relevantFailure.platform_name} — ${failureGuide.title.toLowerCase()}. First step: ${failureGuide.steps[0]}`
         : '\nNo publishing failures are recorded.',
-      `\nI only report what the database confirms — nothing is marked published until the platform returns an ID or URL.`,
-    ].join('\n');
+      '\nI only report what the database confirms. Nothing is marked published until the platform returns an ID or URL.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    suggestedActions.push({ id: 'open-diagnostics', label: 'Diagnostics', href: '/dashboard/diagnostics' });
   } else if (intent === 'plan') {
     reply = [
       campaign
@@ -132,12 +295,26 @@ export const POST = handler(async (req, _ctx, auth) => {
       '',
       'Nothing has been published. Approve the content in the campaign screen to create the jobs.',
     ].join('\n');
+    if (campaign) suggestedActions.push({ id: 'open-campaign', label: 'Open campaign', href: `/dashboard/campaigns/${campaign.id}` });
   } else {
-    reply = `I can analyse posters, draft platform-specific captions, choose platforms, prepare schedules and explain publishing errors.\n\nRight now: ${connected.length} connected platform(s), ${manual.length} manual platform(s), ${notConnected.length} awaiting a connection.${campaign ? ` Latest campaign: “${campaign.name}”.` : ' No campaign yet.'}\n\nTry: “Plan a campaign for my restaurant website offer tomorrow at 10am” or “Why did my LinkedIn post fail?”`;
+    reply = [
+      'I am ROYALWEB AI ASSISTANT. I diagnose and explain; I do not publish on my own.',
+      '',
+      `Right now: ${connected.length} connected platform(s), ${manual.length} manual platform(s), ${notConnected.length} awaiting a connection.${campaign ? ` Latest campaign: “${campaign.name}”.` : ' No campaign yet.'}`,
+      '',
+      'I can:',
+      '• Explain a specific publishing failure, using the stored platform message.',
+      '• Run a self-check and tell you the first step out of each problem.',
+      '• Teach the recovery method for auth, permission, rate-limit and duplicate traps.',
+      '• Plan which platforms to use and when, with a suggested slot.',
+      '',
+      'Try: “Why did my LinkedIn post fail?”, “Fix the stuck posts”, “What should I do about rate limits?”',
+    ].join('\n');
+    suggestedActions.push({ id: 'open-diagnostics', label: 'Run diagnostics', href: '/dashboard/diagnostics' });
   }
 
-  // If an AI provider is configured, let it enrich the explanation — but the
-  // deterministic plan above remains the source of truth.
+  // If an AI provider is configured, let it rewrite the explanation — the
+  // deterministic answer above remains the source of truth.
   const provider = resolveProvider(settings.aiProvider, settings.aiModel);
   let aiUsed = false;
   let aiError: string | null = null;
@@ -148,28 +325,39 @@ export const POST = handler(async (req, _ctx, auth) => {
           {
             role: 'system',
             content:
-              'You are ROYALWEB AI ASSISTANT inside a marketing automation dashboard. Be concise and concrete. Never claim a post was published: publishing only happens after the admin approves a campaign. Use the supplied plan data. Do not invent statistics.',
+              'You are ROYALWEB AI ASSISTANT inside a marketing automation dashboard. Be concise, concrete and calm. Never claim a post was published. Never invent errors or statistics. Use only the supplied facts and the supplied recovery steps. You may not bypass platform approvals, paid tiers, CAPTCHAs or rate limits.',
           },
           {
             role: 'user',
-            content: `Admin message: ${message}\n\nDeterministic plan data (source of truth):\n${JSON.stringify(
+            content: `Admin message: ${message}\n\nVerified facts (source of truth):\n${JSON.stringify(
               {
                 intent,
+                deterministicAnswer: reply,
                 campaign: campaign ? { name: campaign.name, status: campaign.status, media: campaign.media_count } : null,
                 connected: connected.map((c) => c.platformName),
                 notConnected: notConnected.map((c) => c.platformName),
                 manual: manual.map((c) => c.platformName),
                 suggestedTime,
                 timezone: settings.defaultTimezone,
-                failedJobs,
                 globalPause: settings.globalPause,
+                failure: relevantFailure
+                  ? {
+                      platform: relevantFailure.platform_name,
+                      status: relevantFailure.status,
+                      errorCode: failureCode,
+                      error: relevantFailure.error,
+                    }
+                  : null,
+                diagnostics: diagnostics
+                  ? { health: diagnostics.health, status: diagnostics.status, issues: diagnostics.issues.map((i) => i.title) }
+                  : null,
               },
               null,
               2
-            )}\n\nWrite a helpful reply for the admin in their language. Keep the plan facts exactly as given.`,
+            )}\n\nRewrite the deterministic answer for the admin in their language. Keep every fact, step and warning exactly. Do not add new claims.`,
           },
         ],
-        { maxTokens: 700, temperature: 0.5 }
+        { maxTokens: 800, temperature: 0.4 }
       );
       reply = res.text.trim() || reply;
       aiUsed = true;
@@ -187,6 +375,16 @@ export const POST = handler(async (req, _ctx, auth) => {
       );
     } catch (err) {
       aiError = (err as Error).message.slice(0, 300);
+      run(
+        'INSERT INTO ai_activity_logs (id, user_id, kind, provider, model, ok, error, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)',
+        newId(),
+        auth.user.id,
+        'assistant',
+        safe(settings.aiProvider),
+        safe(settings.aiModel),
+        aiError,
+        nowIso()
+      );
     }
   }
 
@@ -195,18 +393,38 @@ export const POST = handler(async (req, _ctx, auth) => {
     intent,
     aiUsed,
     aiError,
-    plan: intent === 'plan' ? { items, suggestedTime, timezone: settings.defaultTimezone, campaignId: campaign?.id ?? null, requiresApproval: true } : null,
-    counts: {
-      total: items.length,
-      connected: connected.length,
-      notConnected: notConnected.length,
-      manual: manual.length,
-    },
-    suggestedActions:
-      intent === 'pause'
-        ? [{ id: 'global-pause', label: settings.globalPause ? 'Resume all publishing' : 'Pause all publishing' }]
-        : campaign
-          ? [{ id: 'open-campaign', label: `Review “${campaign.name}”`, href: `/dashboard/campaigns/${campaign.id}` }]
-          : [{ id: 'new-campaign', label: 'Create a campaign', href: '/dashboard/new' }],
+    plan:
+      intent === 'plan'
+        ? { items, suggestedTime, timezone: settings.defaultTimezone, campaignId: campaign?.id ?? null, requiresApproval: true }
+        : null,
+    diagnosis: diagnostics
+      ? {
+          health: diagnostics.health,
+          status: diagnostics.status,
+          issues: diagnostics.issues.slice(0, 5).map((i) => ({
+            severity: i.severity,
+            title: i.title,
+            code: i.code,
+            firstStep: i.steps[0] ?? '',
+          })),
+        }
+      : null,
+    failure: relevantFailure
+      ? {
+          platformId: relevantFailure.platform_id,
+          platformName: relevantFailure.platform_name,
+          status: relevantFailure.status,
+          code: failureCode,
+          message: relevantFailure.error,
+          title: failureGuide?.title ?? 'Publishing failure',
+          steps: failureGuide?.steps ?? [],
+        }
+      : null,
+    counts: { total: items.length, connected: connected.length, notConnected: notConnected.length, manual: manual.length },
+    suggestedActions,
   });
 });
+
+function safe(value: string | null | undefined): string {
+  return value || 'unknown';
+}

@@ -32,8 +32,22 @@ interface AssistantResponse {
   aiUsed: boolean;
   aiError: string | null;
   plan: { items: PlanItem[]; suggestedTime: string; timezone: string; campaignId: string | null; requiresApproval: boolean } | null;
+  diagnosis: {
+    health: number;
+    status: string;
+    issues: { severity: 'critical' | 'warning' | 'info'; title: string; code: string; firstStep: string }[];
+  } | null;
+  failure: {
+    platformId: string;
+    platformName: string;
+    status: string;
+    code: string | null;
+    message: string | null;
+    title: string;
+    steps: string[];
+  } | null;
   counts: { total: number; connected: number; notConnected: number; manual: number };
-  suggestedActions: { id: string; label: string; href?: string }[];
+  suggestedActions: { id: string; label: string; href?: string; repair?: string }[];
 }
 
 interface Message {
@@ -46,6 +60,8 @@ const SUGGESTIONS = [
   'Plan a campaign for my restaurant website offer tomorrow at 10am',
   'Which platforms are connected right now?',
   'Why did my last post fail?',
+  'Fix the stuck posts',
+  'What should I do about rate limits?',
   'Pause all publishing',
   'What content would work on LinkedIn for cafe owners?',
 ];
@@ -93,9 +109,25 @@ export function AssistantView() {
     [busy, push]
   );
 
-  async function runAction(action: { id: string; label: string; href?: string }) {
+  async function runAction(action: { id: string; label: string; href?: string; repair?: string }) {
     if (action.href) {
       router.push(action.href);
+      return;
+    }
+    if (action.repair) {
+      if (!confirm(`${action.label}? This is recorded in the audit log.`)) return;
+      setBusy(action.id);
+      try {
+        const result = await api<{ result: { changed: number; message: string } }>('/api/diagnostics/repair', {
+          method: 'POST',
+          body: { action: action.repair },
+        });
+        push(result.result.message, 'success');
+      } catch (err) {
+        push((err as Error).message, 'error');
+      } finally {
+        setBusy(null);
+      }
       return;
     }
     if (action.id === 'global-pause') {
@@ -181,6 +213,61 @@ export function AssistantView() {
                         Suggested slot {new Date(message.response.plan.suggestedTime).toLocaleString()} ·{' '}
                         {message.response.plan.timezone}. Open the campaign to approve and schedule.
                       </p>
+                    </div>
+                  ) : null}
+
+                  {message.response?.diagnosis ? (
+                    <div className="mt-2.5 rounded-xl border border-white/[0.07] bg-obsidian-900/60 p-3 text-left">
+                      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] uppercase tracking-wider text-gold-500">Self-check</span>
+                        <Badge tone={message.response.diagnosis.health >= 90 ? 'green' : message.response.diagnosis.health >= 60 ? 'amber' : 'red'}>
+                          {message.response.diagnosis.health}/100
+                        </Badge>
+                        <span className="text-[10px] text-ink-500">{message.response.diagnosis.status}</span>
+                      </div>
+                      {message.response.diagnosis.issues.length === 0 ? (
+                        <p className="text-[11px] text-ink-400">All checks pass.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {message.response.diagnosis.issues.map((issue) => (
+                            <div key={`${issue.code}-${issue.title}`} className="rounded-lg px-1.5 py-1">
+                              <div className="flex items-center gap-1.5">
+                                <Badge tone={issue.severity === 'critical' ? 'red' : issue.severity === 'warning' ? 'amber' : 'blue'}>
+                                  {issue.severity}
+                                </Badge>
+                                <span className="text-[11.5px] text-ink-200">{issue.title}</span>
+                              </div>
+                              {issue.firstStep ? (
+                                <div className="mt-0.5 pl-1 text-[10.5px] text-ink-500">→ {issue.firstStep}</div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {message.response?.failure ? (
+                    <div className="mt-2.5 rounded-xl border border-danger/20 bg-danger/[0.04] p-3 text-left">
+                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                        <Badge tone="red">last stored failure</Badge>
+                        <span className="text-[11.5px] text-ink-200">
+                          {message.response.failure.platformName} · {message.response.failure.code ?? 'unknown'}
+                        </span>
+                      </div>
+                      {message.response.failure.message ? (
+                        <p className="mb-1.5 line-clamp-3 text-[10.5px] leading-relaxed text-ink-500">
+                          {message.response.failure.message}
+                        </p>
+                      ) : null}
+                      <ol className="space-y-0.5 text-[11px] leading-relaxed text-ink-300">
+                        {message.response.failure.steps.slice(0, 4).map((step, i) => (
+                          <li key={step} className="flex gap-1.5">
+                            <span className="text-gold-400">{i + 1}.</span>
+                            <span>{step}</span>
+                          </li>
+                        ))}
+                      </ol>
                     </div>
                   ) : null}
 

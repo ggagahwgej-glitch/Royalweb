@@ -22,6 +22,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  Stethoscope,
   Users,
   X,
 } from 'lucide-react';
@@ -65,6 +66,7 @@ const SECTIONS = [
   {
     label: 'System',
     items: [
+      { href: '/dashboard/diagnostics', label: 'Diagnostics', icon: Stethoscope },
       { href: '/dashboard/settings', label: 'Settings', icon: Settings },
       { href: '/dashboard/security', label: 'Security', icon: ShieldCheck },
     ],

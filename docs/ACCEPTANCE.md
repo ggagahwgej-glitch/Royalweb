@@ -11,13 +11,15 @@ npm run build && npm start
 TEST_EMAIL=admin@royalweb.local TEST_PASSWORD='Royalweb-Acceptance-2026' npm run acceptance
 ```
 
-**Result: 31 passed · 0 failed · 1 skipped · 32 checks.**
+**Result: 40 passed · 0 failed · 1 skipped · 41 checks.**
 
 Raw output (reproducible with `npm run acceptance`):
 
 ```
 ROYALWEB AUTOPILOT — acceptance suite against http://127.0.0.1:3000
 
+(node:4415) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
 · mock WordPress API listening on 127.0.0.1:3999 (test double)
 
 ✓ T1a  Health endpoint reports 25 platforms — db=ok
@@ -28,7 +30,7 @@ ROYALWEB AUTOPILOT — acceptance suite against http://127.0.0.1:3000
 ✓ T3   Original poster preserved byte-for-byte — sha256 e859010cb78d289b…
 ✓ T5   All 25 platforms present — A=10 B=8 C=7
 ✓ T6   Automatic vs manual clearly distinguished — 18 API · 7 manual
-✓ T4   Platform-specific content generated for all 25 (no two identical captions) — 25 drafts · 25 unique · 21 distinct openings · mode=template
+✓ T4   Platform-specific content generated for all 25 (no two identical captions) — 25 drafts · 25 unique · 23 distinct openings · mode=template
 ✓ T7a  Account connection workflow (manual profile) — stored
 ✓ T7b  Invalid credentials rejected before storage — WordPress verification: HTTP 0
 ✓ T7c  WordPress connected via live REST verification — Acceptance Editor
@@ -44,17 +46,32 @@ ROYALWEB AUTOPILOT — acceptance suite against http://127.0.0.1:3000
 ✓ T10  Failed publishing shows a useful, stored error — WordPress publish: platform server error (HTTP 500). Mock upstream failure
 ✓ T10b Temporary failure is queued for retry, not lost — status=scheduled, retryIn=4m
 ✓ T17  Disconnecting an account blocks future publishing — job=manual_required
-✓ T18  Global pause prevents publishing (job stays scheduled) — status=scheduled
+✓ T18  Global pause prevents publishing (job stays scheduled) — status=scheduled · 
 ✓ T13  Dashboard renders with mobile viewport + navigation — HTTP 200
 ✓ T15  No credentials or secret values exposed to the client
+✓ T19  Self-diagnosis runs live checks and scores health — 14 checks · health 100 · 0 issue(s)
+✓ T19b Diagnostics reports the worker heartbeat honestly — 5s since last tick
+✓ T20  Interrupted job is detected and recoverable in one action — 1 released → scheduled
+✓ T20b Worker tick is idempotent and records a heartbeat — processed=1
+✓ T21  Assistant explains a real stored failure with recovery steps — duplicate_prevented · 3 steps
+✓ T21b Assistant does not invent a failure for a platform with no errors — no fabricated diagnosis
+✓ T22  Assistant runs the self-check instead of guessing — health 100, 0 issue(s)
+✓ T23  Duplicate fingerprint stays consistent after editing hashtags — 15512ea5d9… → 42ebf407fd…
+✓ T24  Duplicate guard is real and can be deliberately overridden — first attempt=cancelled · forced=published
 ✓ X1   Private contact details excluded from generated content
-✓ X2   Analytics reports engagement as unavailable, not zero — Impressions, reach, clicks, likes and views are not exposed by these platform APIs
+✓ X2   Analytics reports engagement as unavailable, not zero — Impressions, reach, clicks, likes and views are not exposed by these platform AP
 ✓ X3   Assistant plans without claiming publication — intent=plan, aiUsed=false
 ✓ X4   Input validation rejects invalid payloads — HTTP 400
 ✓ X5   Cross-site request without verification header blocked — HTTP 403
 
 ──────────────────────────────────────────────────────────────
-31 passed · 0 failed · 1 skipped · 32 checks
+40 passed · 0 failed · 1 skipped · 41 checks
+
+All checks passed.
+
+Not covered here (requires real third-party credentials): live OAuth flows and
+publishing to the real 25 platforms. Verify each platform once via
+Connected Accounts → Verify, then publish a single test campaign.
 ```
 
 ## How the tests were executed
@@ -91,6 +108,10 @@ and connection-expiry paths.
 | 16 | No secret leaves the server | T15: `/api/settings` and `/api/accounts` contain no ciphertext, key material or `sk-…` values |
 | 17 | Private contact details are not published unless enabled | X1: generated content contains no WhatsApp/phone value while public contact is off |
 | 18 | Analytics never fabricates engagement; assistant needs approval | X2: `engagement.available === false` with an explanation; X3: assistant returns a plan with `requiresApproval` and cannot publish |
+| 18 | Self-diagnosis finds real faults and repairs them | T19–T20b: 14 live checks, health score, honest worker heartbeat (6 s), a job injected into `processing` was detected, released and returned to `scheduled`; a manual tick recorded a new heartbeat |
+| 19 | Assistant solves problems from real data, never by guessing | T21: found the stored failure for the mentioned platform and quoted the platform's own message with 3 recovery steps; T21b: no failure invented for a platform with no errors; T22: "fix the stuck posts" ran the self-check (health + issues) |
+| 20 | Duplicate fingerprint is consistent across edit and generate | T23: editing only hashtags changed the stored `content_hash` (previously it did not, so genuinely new copy could be blocked) |
+| 21 | Duplicate protection has a working, explicit override | T24: identical copy was cancelled by the guard, then "Publish anyway" (force) published it and recorded the platform URL |
 | + | Input validation & CSRF | X4: empty campaign name → `400`; X5: PATCH without `x-royalweb-request` → `403` |
 | + | Every dashboard route renders | `/`, `/login`, `/dashboard` and all 12 sub-pages returned `200` with a session, no error boundaries triggered |
 
@@ -115,4 +136,5 @@ TEST_EMAIL=you@example.com TEST_PASSWORD='…' npm run acceptance
 ```
 
 The suite creates its own campaigns (prefixed `Acceptance`), a mock-verified WordPress account and a
-Behance profile account. Delete them from the dashboard afterwards if you ran it against production.
+Behance profile account, and injects one interrupted job into SQLite for the recovery test. Delete them from
+the dashboard afterwards if you ran it against production.

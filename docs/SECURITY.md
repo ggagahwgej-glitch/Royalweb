@@ -72,6 +72,13 @@
 - [ ] Rotate platform tokens periodically; disconnect unused accounts (this cancels their pending jobs).
 - [ ] Keep dependencies updated (`npm audit`, `npm update`).
 
+## Recovery and self-diagnosis
+
+`/dashboard/diagnostics` runs live probes (SQLite integrity, AES round-trip, worker heartbeat, stuck jobs,
+overdue queue, expired connections, disk, sessions) and offers audited repairs. Every repair is explicit,
+logged, and never publishes new content — `run-tick` only drains jobs that were already approved, scheduled
+and due. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 ## What the app deliberately does not do
 
 - Store social-media passwords (only OAuth tokens / app-specific passwords you generate).

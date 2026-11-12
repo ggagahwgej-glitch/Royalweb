@@ -37,16 +37,40 @@ export const DELETE = handler(async (req, ctx, auth) => {
     auth.user.id
   );
   if (!row) throw new ApiError(404, 'Media not found', 'not_found');
-  if (row.campaign_id && !force) {
+  if (row.campaign_id) {
+    const pendingJobs = get<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM publishing_jobs
+        WHERE campaign_id = ? AND status IN ('scheduled','processing','waiting_approval','manual_required')`,
+      row.campaign_id
+    );
     const active = get<{ c: number }>(
       `SELECT COUNT(*) AS c FROM campaigns WHERE id = ? AND status IN ('scheduled','publishing','paused')`,
       row.campaign_id
     );
-    if (Number(active?.c || 0) > 0) {
+    const inUse = Number(pendingJobs?.c || 0) > 0 || Number(active?.c || 0) > 0;
+    if (inUse && !force) {
       throw new ApiError(
         409,
-        'This media belongs to a campaign that is scheduled or active. Confirm deletion explicitly to continue.',
-        'media_in_active_campaign'
+        'This poster is used by a campaign with pending or scheduled posts. Cancel those jobs first, or confirm deletion to cancel them.',
+        'media_in_active_campaign',
+        { pendingJobs: Number(pendingJobs?.c || 0) }
+      );
+    }
+    if (inUse && force) {
+      // Publishing without the poster would produce a broken post, so the
+      // dependent jobs are cancelled rather than silently attempted.
+      run(
+        `UPDATE publishing_jobs SET status = 'cancelled', error = 'Poster deleted by admin — job cancelled to avoid a post without media.',
+           error_code = 'media_deleted', retryable = 0, updated_at = ?
+         WHERE campaign_id = ? AND status IN ('scheduled','waiting_approval','manual_required')`,
+        nowIso(),
+        row.campaign_id
+      );
+      run(
+        `UPDATE manual_tasks SET status = 'skipped', notes = 'Poster deleted by admin', updated_at = ?
+          WHERE campaign_id = ? AND status = 'pending'`,
+        nowIso(),
+        row.campaign_id
       );
     }
   }
