@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --gold: #c5a059;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  background-color: #07070a;
+  color: #f2f2f4;
+}
+
+body {
+  background-image:
+    radial-gradient(900px 500px at 15% -10%, rgba(197, 160, 89, 0.09), transparent 60%),
+    radial-gradient(700px 400px at 95% 0%, rgba(197, 160, 89, 0.045), transparent 55%);
+  background-repeat: no-repeat;
+  min-height: 100dvh;
+  font-feature-settings: 'cv02', 'cv03', 'cv04';
+}
+
+::selection {
+  background: rgba(197, 160, 89, 0.32);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #26262f;
+  border-radius: 999px;
+  border: 2px solid #07070a;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #35353f;
+}
+
+@layer base {
+  input[type='datetime-local']::-webkit-calendar-picker-indicator,
+  input[type='date']::-webkit-calendar-picker-indicator {
+    filter: invert(0.75) sepia(0.25) saturate(2);
+  }
+  :focus-visible {
+    outline: 2px solid rgba(197, 160, 89, 0.65);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-white/[0.06] bg-obsidian-850/70 shadow-card backdrop-blur-[2px];
+  }
+  .card-hover {
+    @apply transition-colors duration-150 hover:border-white/[0.1] hover:bg-obsidian-800/70;
+  }
+  .gold-text {
+    @apply bg-gradient-to-r from-gold-200 via-gold-300 to-gold-500 bg-clip-text text-transparent;
+  }
+  .hairline {
+    @apply border-t border-white/[0.06];
+  }
+  .field-label {
+    @apply mb-1.5 block text-[11px] font-medium uppercase tracking-[0.12em] text-ink-400;
+  }
+  .input {
+    @apply w-full rounded-xl border border-white/[0.08] bg-obsidian-900/80 px-3.5 py-2.5 text-[14px] text-ink-100 placeholder:text-ink-500 focus:border-gold-500/50 focus:outline-none focus:ring-1 focus:ring-gold-500/25;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] font-medium text-ink-300;
+  }
+  .skeleton {
+    @apply animate-pulse rounded-lg bg-white/[0.04];
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
